@@ -1,0 +1,144 @@
+---
+/**
+ * Keeps deep links landing on the right section.
+ *
+ * These pages are very long and their height moves a great deal after load:
+ * each Mermaid block starts as several lines of monospace source and becomes a
+ * compact SVG, so the document can grow *or* shrink by tens of thousands of
+ * pixels. The browser performs its anchor scroll before any of that, so
+ * arriving at /page/#section — from a search result, a shared URL or the
+ * objectives card — would otherwise leave you in the wrong place.
+ *
+ * Rather than trying to time the reflow, this re-checks the target's position
+ * and corrects any drift for a few seconds. It yields immediately and
+ * permanently as soon as the reader scrolls for themselves.
+ *
+ * The loop is driven by timers rather than requestAnimationFrame: rAF is paused
+ * in a hidden tab, so a deep link opened in the background would never be
+ * corrected and would still be wrong when the reader switched to it.
+ */
+---
+
+<script>
+  const hash = location.hash;
+
+  if (hash.length > 1) {
+    const STEP_MS = 50;
+    const WINDOW_MS = 3000;
+
+    let userMoved = false;
+    const release = () => {
+      userMoved = true;
+    };
+
+    // Genuine input only. Programmatic scrolling must not cancel the correction,
+    // which is why 'scroll' is deliberately not in this list.
+    window.addEventListener('wheel', release, { once: true, passive: true });
+    window.addEventListener('touchmove', release, { once: true, passive: true });
+    window.addEventListener('keydown', (e) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) release();
+    });
+
+    function target(): HTMLElement | null {
+      const raw = hash.slice(1);
+      let id = raw;
+      try {
+        id = decodeURIComponent(raw);
+      } catch {
+        /* malformed escape: fall back to the raw value */
+      }
+      return document.getElementById(id);
+    }
+
+    // Match the sticky header allowance used by scroll-padding-top.
+    function offset(): number {
+      const header = getComputedStyle(document.documentElement).getPropertyValue('--header-h');
+      return (parseInt(header, 10) || 60) + 18;
+    }
+
+    let deadline = performance.now() + WINDOW_MS;
+    let timer: number | undefined;
+    let stuck = 0;
+    let lastScrollY = -1;
+
+    function tick() {
+      timer = undefined;
+      if (userMoved) return;
+
+      const el = target();
+      if (el) {
+        const delta = el.getBoundingClientRect().top - offset();
+
+        if (Math.abs(delta) < 2) {
+          // In position — but keep watching rather than exiting, because a late
+          // reflow (a diagram shrinking, a font swapping) can move the target
+          // out from under us after it first looks settled.
+          stuck = 0;
+        } else {
+          // Clamped at the end of the document: nothing more to correct. Two
+          // consecutive unmoved checks, so one slow frame is not mistaken for it.
+          if (Math.round(window.scrollY) === lastScrollY && delta > 0) {
+            if (++stuck >= 2) return;
+          } else {
+            stuck = 0;
+          }
+
+          lastScrollY = Math.round(window.scrollY);
+          // 'instant', not 'auto': the page sets scroll-behavior: smooth and
+          // 'auto' defers to it, which would animate a correction that should be
+          // a jump — and leave the next check reading "hasn't moved".
+          window.scrollBy({ top: delta, behavior: 'instant' });
+        }
+      }
+
+      if (performance.now() < deadline) timer = window.setTimeout(tick, STEP_MS);
+    }
+
+    function run(extraMs: number) {
+      if (userMoved) return;
+      deadline = Math.max(deadline, performance.now() + extraMs);
+      stuck = 0;
+      if (timer === undefined) timer = window.setTimeout(tick, 0);
+    }
+
+    // Diagrams finishing is the largest single reflow on these pages, so give
+    // the correction a fresh window when it happens.
+    window.addEventListener('sc500:diagramsrendered', () => run(1200));
+    window.addEventListener('load', () => run(800));
+
+    // Catch every other reflow too — a slow diagram, a font swap, an image
+    // arriving — by reacting to the document's height changing rather than
+    // guessing when it has finished. Capped so it cannot watch forever.
+    if ('ResizeObserver' in window) {
+      const startedAt = performance.now();
+      let lastHeight = document.documentElement.scrollHeight;
+
+      const observer = new ResizeObserver(() => {
+        const height = document.documentElement.scrollHeight;
+        if (height === lastHeight) return;
+        lastHeight = height;
+
+        if (userMoved || performance.now() - startedAt > 15000) {
+          observer.disconnect();
+          return;
+        }
+        run(700);
+      });
+
+      observer.observe(document.documentElement);
+    }
+
+    // A tab opened in the background settles while nobody is looking; re-check
+    // when it is actually shown.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) run(1200);
+    });
+
+    window.addEventListener('pagehide', () => {
+      window.clearTimeout(timer);
+      timer = undefined;
+    });
+
+    run(WINDOW_MS);
+  }
+</script>

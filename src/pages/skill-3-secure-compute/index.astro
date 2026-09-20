@@ -1,0 +1,401 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const diskChoice = `
+flowchart TB
+  Q["Choosing disk encryption for a virtual machine"] --> A{"Do you have to hold and rotate the key yourself?"}
+  A -->|"No"| SSE["Server-side encryption, platform-managed key<br/>On by default on every managed disk"]
+  A -->|"Yes"| B{"Where must the encryption be applied?"}
+  B -->|"At the host — OS and data disks,<br/>the temporary disk and host caches"| HOST["Encryption at host<br/>plus a disk encryption set<br/>No agent, no performance cost"]
+  B -->|"In the guest, because policy<br/>names BitLocker or dm-crypt"| ADE["Azure Disk Encryption<br/>A VM extension; keys and<br/>secrets live in Key Vault"]
+  B -->|"So the Azure host itself<br/>cannot read the disk"| CONF["Confidential VM<br/>Key bound to the hardware<br/>trusted execution environment"]
+`;
+
+const appNetwork = `
+flowchart TB
+  C["Client request"] --> AR["Access restrictions — allow and deny rules<br/>by IP address, service tag or virtual network"]
+  AR --> PE["Private endpoint — an inbound private IP for the app<br/>set public network access to Disabled alongside it"]
+  PE --> APP["App Service or Function app<br/>sign-in handled by built-in authentication"]
+  APP --> VI["Virtual network integration — the only outbound<br/>control of the three, letting the app reach your network"]
+  VI --> BE["Private backends — Azure SQL, Key Vault and<br/>storage behind their own private endpoints"]
+`;
+
+const containerLifecycle = `
+flowchart TB
+  BUILD["Build — image pushed to Azure Container Registry"] --> SCAN["Agentless vulnerability assessment of registry images,<br/>by Microsoft Defender Vulnerability Management"]
+  SCAN --> POL["Admission — the Azure Policy add-on for Kubernetes audits or denies:<br/>no privileged containers, approved registries only, no host path mounts"]
+  POL --> RUN["Run — the workload executes on a node"]
+  RUN --> SENSOR["Defender sensor on each node — runtime threat detection and binary drift"]
+  RUN --> DISC["Agentless discovery — cluster and API server configuration,<br/>and the images actually running"]
+`;
+
+const apimPolicy = `<inbound>
+  <!-- Reject anything without a valid Microsoft Entra token for this API. -->
+  <validate-jwt header-name="Authorization"
+                failed-validation-httpcode="401"
+                failed-validation-error-message="Unauthorized">
+    <openid-config url="https://login.microsoftonline.com/{tenant-id}/v2.0/.well-known/openid-configuration" />
+    <audiences>
+      <audience>api://contoso-orders</audience>
+    </audiences>
+    <required-claims>
+      <claim name="roles" match="any">
+        <value>Orders.Read</value>
+      </claim>
+    </required-claims>
+  </validate-jwt>
+
+  <!-- Then throttle per caller, so a valid token cannot be used to flood the backend. -->
+  <rate-limit-by-key calls="120" renewal-period="60"
+                     counter-key="@(context.Subscription?.Id ?? context.Request.IpAddress)" />
+  <ip-filter action="allow">
+    <address-range from="203.0.113.0" to="203.0.113.255" />
+  </ip-filter>
+</inbound>`;
+---
+
+<NoteLayout
+  slug="skill-3-secure-compute"
+  description="SC-500 Skill 3: securing AI workloads and agents, disk encryption, Azure Bastion, just-in-time VM access, Azure Arc, Defender for Servers, trusted launch, Azure Machine Configuration, Defender for Containers, AKS, ACR, Functions, Logic Apps, App Service, Web Application Firewall and API Management."
+  intro="Three very different sub-skills share this domain: securing AI workloads, securing servers and virtual machines, and securing the application platform. The AI sub-skill is the one that makes SC-500 distinctive — it is summarised here and taken apart in its own deep dive."
+  themeColor="#c2410c"
+>
+  <p class="lead">
+    Compute is where Microsoft's security portfolio is at its most layered, and the exam exploits that by offering you
+    four real controls and asking which one belongs at this layer. Keep asking: is this about the{' '}
+    <em>platform</em> (Defender plans, Azure Policy), the <em>machine</em> (encryption, trusted launch, agents), the{' '}
+    <em>network path</em> (Bastion, JIT, access restrictions) or the <em>application</em> (authentication, WAF, API
+    Management)?
+  </p>
+
+  <h2 id="security-for-ai">3.1 Security for AI — the short version</h2>
+  <p>
+    This sub-skill spans five products and eleven bullet points in the skills measured. Here is the map; the{' '}
+    <a href={href('ai-agent-security')}>AI &amp; agent security deep dive</a> works through every item in detail, and you
+    should read it before the exam rather than relying on this summary.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl t-green">
+      <thead>
+        <tr><th>Objective</th><th>Product</th><th>One-line answer</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Identify overexposure of data in SharePoint</td><td>SharePoint Advanced Management + Purview</td><td>Data access governance reports and the content management assessment to find it; <strong>Restricted Content Discovery</strong> and <strong>Restricted Access Control</strong> to contain it.</td></tr>
+        <tr><td>Identify Copilot and AI app risks</td><td>Microsoft Purview DSPM</td><td>Data risk assessments, activity explorer, and one-click DLP and labelling policies.</td></tr>
+        <tr><td>Real-time protection for Copilot Studio agents</td><td>Microsoft Defender</td><td>Defender portal → <strong>Security for AI</strong> → connect Copilot Studio, toggle real-time protection, then finish onboarding in Power Platform with a shared app ID.</td></tr>
+        <tr><td>Conditional Access for Entra Agent ID</td><td>Microsoft Entra</td><td>Target agent identities for app-only flows; target <em>users and groups</em> for on-behalf-of flows. Agent risk is a condition.</td></tr>
+        <tr><td>Analyse blast radius</td><td>Defender XDR</td><td>Agent inventory plus Exposure Management: what the agent's identity can reach if the agent is subverted.</td></tr>
+        <tr><td>Manage Entra Agent ID access</td><td>Microsoft Entra ID Governance</td><td>Sponsors and owners, access packages, lifecycle and expiry for agent identities.</td></tr>
+        <tr><td>AI Gateway in API Management for Foundry</td><td>Microsoft Foundry + APIM</td><td>Foundry portal → Manage → AI Gateway. Token-per-minute limits return <code>429</code>; total token quota returns <code>403</code>.</td></tr>
+        <tr><td>Defender for AI Services</td><td>Defender for Cloud</td><td>A cloud workload protection plan — runtime detection of jailbreaks, prompt injection, data exposure and wallet abuse.</td></tr>
+        <tr><td>Guardrails for agent security in Foundry</td><td>Microsoft Foundry</td><td>A <em>guardrail</em> is a named set of <em>controls</em> assigned to models and agents. An agent's guardrail overrides the model's.</td></tr>
+        <tr><td>Data and AI security dashboard</td><td>Defender for Cloud</td><td>Needs Defender CSPM with sensitive data discovery, Defender for Storage, Defender for Databases and AI threat protection.</td></tr>
+        <tr><td>Manage agents in the Microsoft 365 admin center</td><td>Microsoft 365</td><td>Inventory, ownership, availability and lifecycle for agents across Microsoft 365.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="This sub-skill moves faster than the study guide">
+    <p>
+      Agent security for Copilot Studio and Foundry agents has been consolidating under{' '}
+      <strong>Microsoft Agent 365</strong>, and the licensing and portal paths have shifted since the skills measured
+      were published. Learn the objective as written — it is what the exam item was authored against — but read the{' '}
+      <a href={href('ai-agent-security')}>deep dive</a> for where the product has actually landed, because the names on
+      screen may not match the names in the bullet list.
+    </p>
+  </Callout>
+
+  <h2 id="disk-encryption">3.2 Servers and virtual machines</h2>
+  <h3>Disk encryption</h3>
+  <Mermaid code={diskChoice} caption="Four options, three of which are mutually exclusive on the same disk. Encryption at host is the modern default when a customer-managed key is required." />
+
+  <div class="table-wrap">
+    <table class="tbl t-orange">
+      <thead>
+        <tr><th>Option</th><th>Encrypts</th><th>Requires</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>SSE with platform-managed key</td><td>OS and data disks, snapshots, images at rest</td><td>Nothing — always on</td></tr>
+        <tr><td>SSE with customer-managed key</td><td>The same, with your key</td><td>A <strong>disk encryption set</strong> and a key vault with soft delete and purge protection</td></tr>
+        <tr><td>Encryption at host</td><td>Everything above <em>plus</em> the temporary disk and host caches, encrypted before it leaves the host</td><td>The feature registered on the subscription and a supported VM size</td></tr>
+        <tr><td>Azure Disk Encryption</td><td>Volumes inside the guest, using BitLocker or dm-crypt</td><td>A VM extension, a key vault with the <em>disk encryption</em> access policy, and a supported OS</td></tr>
+        <tr><td>Confidential disk encryption</td><td>The OS disk, with the key protected by the VM's own TEE so the host cannot read it</td><td>A confidential VM size</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Azure Bastion</h3>
+  <p>
+    Bastion gives RDP and SSH over TLS on port 443 from the portal or a native client, so VMs need no public IP, no
+    agent and no open management ports. Dedicated SKUs need a subnet named exactly{' '}
+    <strong><code>AzureBastionSubnet</code></strong>, sized <strong>/26 or larger</strong>.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Feature</th><th>Developer</th><th>Basic</th><th>Standard</th><th>Premium</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Cost</td><td>Free</td><td>Paid</td><td>Paid</td><td>Paid</td></tr>
+        <tr><td>Dedicated host / virtual network peering</td><td>❌ shared, one VM at a time</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Native client, file transfer, shareable links, IP-based connections, custom ports</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Host scaling (2–50 instances)</td><td>❌</td><td>❌ fixed at 2</td><td>✅</td><td>✅</td></tr>
+        <tr><td><strong>Session recording</strong></td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+        <tr><td><strong>Private-only deployment (no public IP)</strong></td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    SKUs can be upgraded but <strong>never downgraded</strong> — a downgrade means deleting and recreating the host.
+    "We must keep an audit trail of what administrators did in the session" is <strong>Premium</strong>, every time.
+  </p>
+
+  <h3>Just-in-time VM access</h3>
+  <ul>
+    <li>Part of <strong>Defender for Servers Plan 2</strong>. It keeps management ports closed with a deny rule and opens them, for a named port, source IP and time window, only on approved request.</li>
+    <li>Requesting access needs write permission on the VM plus <code>Microsoft.Security/locations/jitNetworkAccessPolicies/initiate/action</code>.</li>
+    <li>It edits <strong>NSG and Azure Firewall rules</strong> for you, then reverts them. It does not remove the public IP — which is why Bastion and JIT are complements, not alternatives.</li>
+  </ul>
+
+  <h3>Azure Arc and Defender for Servers</h3>
+  <p>
+    <strong>Azure Arc-enabled servers</strong> project a machine outside Azure — on-premises, at the edge, in AWS or
+    GCP — into Azure Resource Manager as a first-class resource. Once projected, it can carry Azure Policy assignments,
+    Machine Configuration, extensions, tags and Defender plans exactly like an Azure VM. When a scenario says "extend
+    these controls to our data-centre servers", Arc is the enabling step.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl t-orange">
+      <thead>
+        <tr><th>Capability</th><th>Plan 1</th><th>Plan 2</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Defender for Endpoint integration — EDR, auto-provisioned</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Agent-based vulnerability scanning via the Defender for Endpoint sensor</td><td>✅</td><td>✅</td></tr>
+        <tr><td><strong>Agentless scanning</strong> — posture, vulnerabilities, secrets and malware from a disk snapshot</td><td>❌</td><td>✅</td></tr>
+        <tr><td>Premium Defender Vulnerability Management — certificate and baseline assessment, vulnerable application blocking</td><td>❌</td><td>✅</td></tr>
+        <tr><td>Regulatory compliance assessment</td><td>❌</td><td>✅ (or any other paid plan)</td></tr>
+        <tr><td>OS configuration assessment against cloud security benchmark baselines</td><td>❌</td><td>✅</td></tr>
+        <tr><td>File integrity monitoring</td><td>❌</td><td>✅ — <em>not on by default</em></td></tr>
+        <tr><td><strong>Just-in-time VM access</strong></td><td>❌</td><td>✅</td></tr>
+        <tr><td>Free data ingestion benefit for specified data types</td><td>❌</td><td>✅</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="Agentless scanning, precisely">
+    <p>
+      Agentless machine scanning takes a snapshot of the disk and analyses it out of band — no agent, no performance
+      impact on the workload — and runs on a fixed <strong>24-hour</strong> cycle that cannot be configured. It comes
+      with <strong>Defender CSPM</strong> <em>or</em> <strong>Defender for Servers Plan 2</strong>, but agentless{' '}
+      <strong>malware</strong> scanning is <strong>Plan 2 only</strong>. Individual agentless capabilities cannot be
+      switched on and off separately; the plans you enable decide what you get.
+    </p>
+  </Callout>
+
+  <h3>Trusted launch and VM security types</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Security type</th><th>Gives you</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Standard</td><td>No platform integrity guarantees.</td></tr>
+        <tr><td><strong>Trusted launch</strong> (the default for new Gen 2 VMs)</td><td><strong>Secure boot</strong> — only signed bootloaders and drivers may load, defeating rootkits and bootkits. <strong>vTPM</strong> — a virtualised TPM 2.0 that measures the boot chain and stores keys. <strong>Integrity monitoring</strong> — attestation of those measurements, surfaced as a Defender for Cloud alert when boot integrity fails.</td></tr>
+        <tr><td><strong>Confidential VM</strong></td><td>Everything trusted launch gives, plus memory encrypted in hardware so the hypervisor and host operator cannot read the VM's memory or OS disk.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <strong>Integrity monitoring requires vTPM</strong>, and vTPM requires trusted launch — a chain worth remembering,
+    because a question will describe the requirement and expect you to name all three.
+  </p>
+
+  <h3>Azure Machine Configuration</h3>
+  <p>
+    Formerly Azure Policy guest configuration. It audits — and, with the right assignment, <em>remediates</em> — settings{' '}
+    <strong>inside</strong> the operating system: password policy, installed applications, certificates, registry keys,
+    running services, and the Microsoft cloud security benchmark compute baselines. It needs the Machine Configuration
+    extension plus a <strong>system-assigned managed identity</strong> on each machine, and works identically on Azure
+    VMs and Arc-enabled servers. Audit-only policies are free; <strong>Apply</strong> (remediating) configurations are
+    charged per machine.
+  </p>
+
+  <Callout type="tip" title="Which tool for which layer">
+    <p>
+      <strong>Azure Policy</strong> governs the VM resource's properties — the SKU, whether the disk is encrypted,
+      whether boot diagnostics are on. <strong>Machine Configuration</strong> governs what is true inside the guest.
+      <strong>Defender for Servers</strong> detects what is happening at runtime. A question about "ensure the password
+      complexity policy on 400 Windows servers" is Machine Configuration, not Azure Policy on its own and not Defender.
+    </p>
+  </Callout>
+
+  <h2 id="containers">3.3 Containers, AKS and the registry</h2>
+  <Mermaid code={containerLifecycle} caption="Defender for Containers covers the whole lifecycle, but through three different mechanisms — agentless registry scanning, the Azure Policy add-on at admission, and the Defender sensor at runtime." />
+
+  <h3>Microsoft Defender for Containers</h3>
+  <ul>
+    <li><strong>Agentless discovery for Kubernetes</strong> — reads the cluster and API configuration through the API server, with no components installed, and feeds the security graph and attack path analysis.</li>
+    <li><strong>Agentless vulnerability assessment</strong> — scans images in Azure Container Registry and the images actually running in clusters, using Microsoft Defender Vulnerability Management.</li>
+    <li><strong>Defender sensor</strong> — a DaemonSet on each node providing runtime threat detection: crypto-mining, reverse shells, container escape attempts, and <strong>binary drift</strong> (a binary running that was never in the image).</li>
+    <li><strong>Azure Policy add-on for Kubernetes</strong> — enforces data-plane rules at admission via Gatekeeper: no privileged containers, no host networking, approved registries only, required resource limits. Effects are <em>audit</em> or <em>deny</em>.</li>
+  </ul>
+
+  <h3>Hardening AKS</h3>
+  <div class="table-wrap">
+    <table class="tbl t-orange">
+      <thead>
+        <tr><th>Control</th><th>What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Microsoft Entra integration + Azure RBAC for Kubernetes authorization</strong></td><td>Cluster authentication and authorisation both come from Entra, so Kubernetes permissions become ordinary Azure role assignments and can go through PIM.</td></tr>
+        <tr><td><strong>Disable local accounts</strong></td><td>Removes the cluster-admin certificate that bypasses Entra entirely. Essential — otherwise your carefully built RBAC has a back door.</td></tr>
+        <tr><td><strong>Private cluster</strong></td><td>The API server gets a private endpoint and no public address.</td></tr>
+        <tr><td><strong>Authorized IP ranges</strong></td><td>The lighter alternative when the API server must stay public.</td></tr>
+        <tr><td><strong>Network policies</strong></td><td>Pod-to-pod filtering — Azure Network Policy Manager, Calico or Cilium. NSGs do not see pod traffic.</td></tr>
+        <tr><td><strong>Workload identity</strong></td><td>Federates a Kubernetes service account to a Microsoft Entra identity, so pods get tokens without secrets.</td></tr>
+        <tr><td><strong>Key Vault provider for Secrets Store CSI driver</strong></td><td>Mounts secrets from Key Vault into the pod rather than storing them as Kubernetes secrets.</td></tr>
+        <tr><td><strong>Node image and Kubernetes auto-upgrade</strong></td><td>Patching the node OS and the control plane on a channel rather than by hand.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Azure Container Registry</h3>
+  <ul>
+    <li><strong>Disable the admin user.</strong> It is a shared username and password with push rights and no identity — the container-registry equivalent of a storage account key.</li>
+    <li><strong>Use Entra roles</strong> — <code>AcrPull</code> for the AKS kubelet identity, <code>AcrPush</code> for pipelines — and <strong>disable anonymous pull</strong>.</li>
+    <li><strong>Tokens and scope maps</strong> give repository-scoped, expiring credentials when a partner needs one repository and nothing else.</li>
+    <li><strong>Premium tier</strong> unlocks private endpoints, customer-managed keys, content trust (image signing), <strong>quarantine</strong> (an image stays unpullable until it passes a scan), geo-replication and dedicated agent pools.</li>
+    <li>Defender for Containers scans pushed images and continually reassesses them as new vulnerabilities are published.</li>
+  </ul>
+
+  <h2 id="application-platform">3.4 The application platform</h2>
+  <Mermaid code={appNetwork} caption="Three network features that are constantly confused. Access restrictions and private endpoints are inbound; virtual network integration is the only outbound one." />
+
+  <h3>App Service and Azure Functions</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Control</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Built-in authentication</strong> ("Easy Auth")</td><td>Turns on sign-in with Microsoft Entra or another provider without a line of code, and can be set to <em>require</em> authentication so unauthenticated requests never reach your code.</td></tr>
+        <tr><td><strong>Access restrictions</strong></td><td>Ordered allow/deny rules by IP range, service tag or virtual network, applied to the app <em>and</em> separately to the <code>scm</code> (Kudu) site — which people forget, leaving the deployment endpoint open.</td></tr>
+        <tr><td><strong>Private endpoint</strong></td><td>Inbound private IP. Pair with public network access disabled.</td></tr>
+        <tr><td><strong>Virtual network integration</strong></td><td>Outbound only — how the app reaches a database or key vault behind a private endpoint.</td></tr>
+        <tr><td><strong>Managed identity</strong></td><td>Removes connection strings. App settings can also reference Key Vault directly with <code>@Microsoft.KeyVault(...)</code>.</td></tr>
+        <tr><td><strong>HTTPS only, minimum TLS version, client certificates</strong></td><td>The transport basics. Client certificates give mutual TLS for machine-to-machine callers.</td></tr>
+        <tr><td><strong>Disable FTP/FTPS and basic publishing credentials</strong></td><td>Force deployment through Entra-authenticated paths only.</td></tr>
+        <tr><td><strong>Defender for App Service</strong></td><td>Detects attacks against the app — dangling DNS takeover, suspicious process execution, web shell upload.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="Function keys are not authentication">
+    <p>
+      An HTTP-triggered function's authorization level of <code>function</code>, <code>admin</code> or{' '}
+      <code>anonymous</code> uses shared <strong>function, host or master keys</strong> passed in a query string or
+      header. They identify nobody, they appear in logs and browser history, and the <strong>master key</strong> grants
+      administrative access to the whole function app. For anything that matters, set the authorization level to{' '}
+      <code>anonymous</code> and put <strong>built-in authentication</strong> or <strong>API Management</strong> in
+      front instead. Store any remaining keys in Key Vault and never in source.
+    </p>
+  </Callout>
+
+  <h3>Azure Logic Apps</h3>
+  <ul>
+    <li>
+      A Consumption logic app with a <strong>Request</strong> trigger exposes a callback URL containing a{' '}
+      <strong>SAS signature</strong>. Anyone with the URL can run the workflow. Controls: restrict <em>trigger</em>{' '}
+      access by IP range, restrict <em>run history contents</em> access by IP range, regenerate the access key to
+      invalidate issued URLs, or switch the trigger to <strong>Microsoft Entra OAuth</strong> and validate the token.
+    </li>
+    <li>Use a <strong>managed identity</strong> on connections rather than stored credentials in an API connection.</li>
+    <li>
+      Mark sensitive parameters as <strong>secure inputs and outputs</strong> so values are redacted in run history —
+      a common place for secrets to sit in plain sight.
+    </li>
+    <li>
+      <strong>Standard</strong> logic apps run on the App Service platform, so they get private endpoints, virtual
+      network integration and access restrictions. Consumption logic apps do not.
+    </li>
+  </ul>
+
+  <h3>Azure Web Application Firewall</h3>
+  <div class="table-wrap">
+    <table class="tbl t-orange">
+      <thead>
+        <tr><th></th><th>On Application Gateway</th><th>On Azure Front Door</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Scope</td><td>Regional, inside your virtual network</td><td>Global, at the edge</td></tr>
+        <tr><td>Rule set</td><td>OWASP Core Rule Set (CRS)</td><td>Default Rule Set (DRS)</td></tr>
+        <tr><td>Modes</td><td colspan="2"><strong>Detection</strong> logs matches only; <strong>Prevention</strong> blocks them. Always start in Detection and tune before switching.</td></tr>
+        <tr><td>Also offers</td><td>Per-site and per-URI policies</td><td>Rate limiting, geo-filtering and bot protection at the edge, closest to the attacker</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Tuning is done with <strong>exclusions</strong> (ignore a named header, cookie or argument for a rule) and{' '}
+    <strong>custom rules</strong>, which are evaluated <em>before</em> the managed rule set and are how you implement
+    allow-lists, geo-blocking and rate limits. Disabling a whole rule because one request tripped it is the wrong
+    answer; an exclusion scoped to that parameter is the right one.
+  </p>
+
+  <h3>API Management as the back-end protection layer</h3>
+  <p>
+    APIM's security is expressed as <strong>policies</strong> in the inbound, backend, outbound and on-error pipelines,
+    applied at global, product, API or operation scope.
+  </p>
+  <CodeBlock lang="xml" label="apim policy" code={apimPolicy} />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Concern</th><th>Policy or feature</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Who is calling</td><td><code>validate-jwt</code> against Microsoft Entra, OAuth 2.0 / OpenID Connect, client certificates for mutual TLS, or subscription keys for low-assurance cases</td></tr>
+        <tr><td>How much they may call</td><td><code>rate-limit-by-key</code> and <code>quota-by-key</code></td></tr>
+        <tr><td>From where</td><td><code>ip-filter</code>, plus network mode — external or internal virtual network injection, or a private endpoint</td></tr>
+        <tr><td>What they may see</td><td><code>validate-content</code> and <code>validate-headers</code> for schema enforcement, and outbound transformation to strip internal detail</td></tr>
+        <tr><td>How APIM reaches the backend</td><td>A <strong>managed identity</strong>, with secrets held in Key Vault as <strong>named values</strong></td></tr>
+        <tr><td>Generative AI backends</td><td>The LLM policies — <code>llm-token-limit</code>, <code>llm-emit-token-metric</code>, <code>llm-content-safety</code> and the semantic cache pair. See the <a href={href('ai-agent-security')}>AI deep dive</a>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="Subscription keys are not identity either">
+    <p>
+      An APIM subscription key says <em>which subscription</em> is calling, not <em>who</em>. When a scenario demands
+      per-user authorisation, role-based access to specific operations, or a token that expires, the answer is{' '}
+      <code>validate-jwt</code> with Microsoft Entra — the subscription key is a rate-limiting and metering handle, not
+      an authentication mechanism.
+    </p>
+  </Callout>
+
+  <h2 id="skill-3-checklist">Skill 3 checklist</h2>
+  <div class="card">
+    <ul>
+      <li>Encryption at host for a customer-managed key with no agent; Azure Disk Encryption only when BitLocker or dm-crypt is named; confidential VM when the host must be untrusted.</li>
+      <li>Bastion Premium for session recording and private-only deployment; <code>AzureBastionSubnet</code> at /26 or larger; SKUs upgrade but never downgrade.</li>
+      <li>JIT is Defender for Servers Plan 2 and edits NSG and firewall rules — it does not remove public IPs.</li>
+      <li>Agentless scanning comes with Defender CSPM or Servers P2; agentless <em>malware</em> scanning is P2 only; it runs every 24 hours.</li>
+      <li>Integrity monitoring needs vTPM needs trusted launch.</li>
+      <li>Machine Configuration for in-guest settings; Azure Policy for resource properties.</li>
+      <li>AKS: Entra plus Azure RBAC for Kubernetes, <em>and</em> disable local accounts, or the back door remains.</li>
+      <li>ACR: disable the admin user, use <code>AcrPull</code>, and remember quarantine and content trust are Premium.</li>
+      <li>Access restrictions and private endpoints are inbound; virtual network integration is outbound.</li>
+      <li>WAF: Detection first, tune with exclusions and custom rules, then Prevention.</li>
+    </ul>
+  </div>
+  <p>
+    Next: <a href={href('skill-4-security-posture-monitoring')}>Skill 4</a>, where all of this becomes telemetry.
+  </p>
+</NoteLayout>

@@ -1,0 +1,286 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Callout from '../components/Callout.astro';
+import Mermaid from '../components/Mermaid.astro';
+import NavCard from '../components/NavCard.astro';
+import Sidebar from '../components/Sidebar.astro';
+import { PAGES, SITE, SKILL_PAGES, pageBySlug } from '../data/site';
+import { absolute, href } from '../lib/urls';
+
+const cards = PAGES.filter((p) => p.slug !== '');
+const foundations = pageBySlug('security-foundations')!;
+
+const description = `Exam-focused study notes for Microsoft Exam ${SITE.exam}: ${SITE.examTitle}. Aligned to the skills measured as of ${SITE.skillsMeasured}, with Mermaid diagrams, decision tables and exam caveats.`;
+
+const schema = [
+  {
+    '@type': 'Course',
+    name: `Exam ${SITE.exam}: ${SITE.examTitle} — Study Notes`,
+    description,
+    url: absolute(SITE.origin, ''),
+    inLanguage: 'en',
+    provider: { '@type': 'Person', name: SITE.author.name, url: SITE.author.site },
+    teaches: SKILL_PAGES.map((p) => p.label),
+    hasCourseInstance: { '@type': 'CourseInstance', courseMode: 'online', courseWorkload: 'PT45H' },
+  },
+];
+
+// Posture and detection apply across every layer rather than sitting beside
+// them, so containment carries that relationship and no arrow has to point
+// inwards from the side.
+//
+// Layout note for every diagram on this site: width comes from long labels,
+// height comes from depth. Wide one-line nodes and short cluster titles keep
+// the aspect ratio near 1.5, which is what stops Mermaid either scaling the
+// whole thing down to unreadable text or leaving big empty margins inside a
+// cluster that is only wide because of its own title.
+const landscape = `
+flowchart TB
+  ATT["Attacker — credential theft · lateral movement · data exfiltration · prompt injection"]
+  ATT --> L1
+
+  subgraph SEE["Scored and watched end to end — Defender for Cloud · Microsoft Sentinel · Security Copilot"]
+    subgraph GOV["Governed by one plane — Microsoft Entra ID · Azure RBAC · Azure Policy"]
+      direction TB
+      L1["Skill 1 · Identity and secrets — Conditional Access · PIM · managed identities · Key Vault"]
+      L2["Skill 2 · Data and network — storage and Azure SQL hardening · NSGs · Azure Firewall · Private Link"]
+      L3["Skill 3 · Compute and apps — disk encryption · Bastion and JIT · Arc · containers · App Service"]
+      L4["Skill 3 · AI workloads and agents — Foundry guardrails · Entra Agent ID · Purview DSPM · AI Gateway"]
+      L1 --> L2
+      L2 --> L3
+      L3 --> L4
+    end
+  end
+`;
+
+const journey = `
+flowchart TB
+  F["Security Foundations — Zero Trust, the product map, the two RBAC systems"] --> S1
+  S1["Skill 1 · Manage identity, access and governance — 20–25%"] --> S2
+  S2["Skill 2 · Secure storage, databases and networking — 25–30%"] --> S3
+  S3["Skill 3 · Secure compute, including AI workloads — 20–25%"] --> S4
+  S4["Skill 4 · Manage and monitor security posture — 20–25%"] --> AI
+  AI["AI and agent security deep dive — the cross-cutting material in one place"] --> T
+  T["Exam tips and caveats — numbers, boundaries, traps, scenario lookup"]
+`;
+---
+
+<BaseLayout
+  title={`${SITE.exam} Study Notes · ${SITE.examTitle}`}
+  description={description}
+  slug=""
+  ogType="website"
+  schema={schema}
+>
+  <div class="layout" data-sidebar="expanded" data-drawer="closed">
+    <Sidebar current="" />
+
+    {/* The home page shares the note pages' rail so navigation never changes
+        shape between them, but keeps a plain block flow: it has a hero rather
+        than a page header, and no section outline. */}
+    <main class="page page-home" id="main">
+      <section class="hero">
+        <span class="eyebrow">Microsoft Certification · Exam {SITE.exam}</span>
+        <h1>Cloud and AI Security Engineer</h1>
+        <p>
+          A complete, exam-focused companion to the official documentation — built around the{' '}
+          <strong>skills measured as of {SITE.skillsMeasured}</strong>. Learn the controls, memorise the caveats, and
+          walk into the exam able to pick the right service on the first read of the question.
+        </p>
+        <div class="hero-meta">
+          <span>⏱ 120 min exam</span>
+          <span>✅ Pass mark: 700/1000</span>
+          <span>📚 4 skill areas</span>
+          <span>🤖 AI security throughout</span>
+          <span>🎓 Associate level</span>
+        </div>
+      </section>
+
+      <!-- The hero sits outside .content so it keeps its own light-on-dark type. -->
+      <div class="content">
+        <div class="card">
+          <p class="lead" style="margin-top:0">
+            SC-500 validates that you can <strong>implement and operate end-to-end security controls</strong> across
+            Azure, hybrid and multicloud estates — and, uniquely among Microsoft's security exams, across{' '}
+            <strong>AI workloads and autonomous agents</strong> as well. It is a configuration-heavy engineering exam:
+            most questions ask <em>which control, at which scope, in which portal, with which role</em> — not "what does
+            this product do?".
+          </p>
+          <Callout type="note" title="How to use these notes">
+            <p>
+              Start with <a href={href('security-foundations')}>Security Foundations</a> to build the mental model — the
+              Zero Trust pillars, the product map, the two RBAC systems and the scope hierarchy that every later answer
+              depends on. Then work the four skill pages in outline order, keep the{' '}
+              <a href={href('ai-agent-security')}>AI &amp; agent security deep dive</a> open once you reach Skill 3, and
+              drill <a href={href('exam-tips')}>Exam tips &amp; caveats</a> in the final week. These notes are a{' '}
+              <strong>companion</strong>, not a replacement: pair every section with hands-on time in the{' '}
+              <a href="https://portal.azure.com" target="_blank" rel="noopener">Azure portal</a>, the{' '}
+              <a href="https://security.microsoft.com" target="_blank" rel="noopener">Defender portal</a> and the
+              official Learn modules.
+            </p>
+          </Callout>
+        </div>
+
+        <Callout type="exam" title="SC-500 is not AZ-500 with a new number">
+          <p>
+            Roughly three quarters of SC-500 is recognisable Azure security engineering, and if you have studied AZ-500
+            that work carries over. The difference is the fourth quarter. <strong>Securing AI</strong> is a first-class
+            sub-skill inside Skill 3, and it reaches into Skill 1 (Conditional Access for agent identities) and Skill 4
+            (the Data and AI security dashboard, Security Copilot). That material is new, it moves fast, and it is where
+            most candidates are weakest — so it gets{' '}
+            <a href={href('ai-agent-security')}>a page of its own</a> on top of its coverage inside Skill 3.
+          </p>
+        </Callout>
+
+        <h2 id="the-estate-in-one-picture" style="margin-bottom:6px">The estate in one picture</h2>
+        <p class="lead" style="margin-top:0">
+          Almost every SC-500 question lives somewhere on this diagram. If you can place a control on the right layer,
+          you can usually eliminate two of the four answers before you finish reading them.
+        </p>
+        <Mermaid
+          code={landscape}
+          caption="Four layers of controls, governed by one identity and policy plane and watched by one posture and detection plane. The skills measured walk the layers from the inside out."
+        />
+
+        <h2 id="skills-measured-at-a-glance" style="margin-bottom:6px">Skills measured at a glance</h2>
+        <p class="lead" style="margin-top:0">
+          SC-500 is the <strong>most evenly weighted</strong> of Microsoft's security exams — every domain is worth
+          between a fifth and a third of the marks. There is no domain you can safely skip, and the widest band, Skill
+          2, is only five points ahead of the others.
+        </p>
+
+        <div class="card">
+          <div class="weight-list">
+            {
+              SKILL_PAGES.map((p) => (
+                <div class="weight-row" style={`--accent:${p.accent}`}>
+                  <div class="wr-top">
+                    <span class="wr-name">{p.label}</span>
+                    <span class="wr-pct">{p.weight}</span>
+                  </div>
+                  <div class="progress">
+                    <span data-pct={p.weightPct} />
+                  </div>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+
+        <Callout type="tip" title="What the even weighting means for your schedule">
+          <p>
+            On a lopsided exam you can trade a weak 10% domain for a strong 35% one. Here you cannot. Budget roughly
+            equal time per skill, then add a block for AI security specifically — it is a slice of Skill 3 on paper, but
+            it carries the newest and least-documented material, so it costs more hours per mark than anything else on
+            the syllabus.
+          </p>
+        </Callout>
+
+        <h2 id="suggested-study-order" style="margin-bottom:6px">Suggested study order</h2>
+        <Mermaid
+          code={journey}
+          caption="Foundations first, then the four skills in outline order — each one assumes the identity and governance vocabulary built by the one before it."
+        />
+
+        <h2 id="study-pages" style="margin-bottom:6px">Study pages</h2>
+        <div class="card-grid">
+          {
+            cards.map((p) => (
+              <NavCard
+                slug={p.slug}
+                badge={p.badge}
+                title={p.label}
+                accent={p.accent}
+                cta={p.slug === foundations.slug ? 'Start here →' : p.group === 'extras' ? 'Drill these →' : 'Explore →'}
+              >
+                {p.blurb}
+              </NavCard>
+            ))
+          }
+        </div>
+
+        <h2 id="before-you-book" style="margin-bottom:6px">Before you book</h2>
+        <div class="stat-grid">
+          <div class="stat" style="--accent:var(--s1)">
+            <div class="s-num">700</div>
+            <div class="s-lbl">Score needed to pass (scaled to 1000)</div>
+          </div>
+          <div class="stat" style="--accent:var(--s2)">
+            <div class="s-num">120</div>
+            <div class="s-lbl">Minutes for the whole assessment</div>
+          </div>
+          <div class="stat" style="--accent:var(--s3)">
+            <div class="s-num">4</div>
+            <div class="s-lbl">Skill areas, all worth 20–30%</div>
+          </div>
+          <div class="stat" style="--accent:var(--s5)">
+            <div class="s-num">1y</div>
+            <div class="s-lbl">Renewal — free online assessment</div>
+          </div>
+        </div>
+
+        <Callout type="exam" title="Exam reality check">
+          <p>
+            Expect multiple choice and multiple response, <strong>drag-and-drop ordering</strong>, "build list"
+            sequencing, <strong>hotspot</strong> (dropdown) items, yes/no statement sets and possible case studies. The
+            exam is proctored and may include interactive components. Most questions cover{' '}
+            <strong>generally available</strong> features, though commonly used <strong>preview</strong> features can
+            appear — and in the AI security space a great deal is still in preview, so know which side of the line each
+            capability sits on. You can retake 24 hours after a first failed attempt.
+          </p>
+        </Callout>
+
+        <Callout type="warn" title="There is no official practice assessment yet">
+          <p>
+            At the time of writing, Microsoft's certification page states the practice assessment for SC-500{' '}
+            <strong>is not currently available</strong>, and that practice assessments generally appear within about
+            eight weeks of an exam leaving beta. Until it lands, treat third-party question banks with real suspicion:
+            most are recycled AZ-500 content and will teach you the wrong product names for the AI domain. Check{' '}
+            <a href={SITE.certPage} target="_blank" rel="noopener">the certification page</a> again before you book.
+          </p>
+        </Callout>
+
+        <Callout type="tip" title="Two habits that pay off more than extra reading">
+          <p>
+            <strong>One:</strong> for every pair of neighbouring controls, be able to say in one sentence what one does
+            that the other does not — service endpoint vs private endpoint, NSG vs security admin rule, Key Vault access
+            policy vs Azure RBAC, Defender for Servers P1 vs P2, analytics tier vs data lake tier. The exam is built on
+            those boundaries. <strong>Two:</strong> build one small estate end to end in a trial subscription — a VM
+            behind Bastion with JIT, a storage account behind a private endpoint, Defender for Cloud on, and a Sentinel
+            workspace collecting its logs. A single hands-on run teaches you the blades, role names and error messages
+            that four chapters of reading will not.
+          </p>
+        </Callout>
+
+        <Callout type="warn" title="Disclaimer">
+          <p>
+            These notes are an independent study aid for <strong>learning purposes only</strong> and are not affiliated
+            with or endorsed by Microsoft. Microsoft's security portfolio is renamed and re-scoped constantly, and the
+            AI security surface in particular has changed several times since this exam launched —{' '}
+            <strong>always verify every detail against the official Microsoft documentation</strong> linked throughout
+            before relying on it.
+          </p>
+        </Callout>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Fill the weighting bars when they scroll into view.
+    const bars = document.querySelectorAll<HTMLElement>('.progress > span[data-pct]');
+    if (bars.length) {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            const el = entry.target as HTMLElement;
+            el.style.width = `${el.dataset.pct}%`;
+            observer.unobserve(el);
+          });
+        },
+        { threshold: 0.35 },
+      );
+      bars.forEach((b) => observer.observe(b));
+    }
+  </script>
+</BaseLayout>

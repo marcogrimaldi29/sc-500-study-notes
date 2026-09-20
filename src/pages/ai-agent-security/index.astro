@@ -1,0 +1,487 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+// Cluster titles are kept shorter than the widest node, and the nodes carry
+// their detail on one or two long lines rather than three short ones. That is
+// what stops the cluster stretching wide around a narrow column of boxes.
+const stack = `
+flowchart TB
+  subgraph IDP["Wrapped by identity — every agent gets a Microsoft Entra Agent ID, a sponsor and Conditional Access"]
+    subgraph STACK["The four places a control can go"]
+      direction TB
+      DATA["Data · Purview and SharePoint Advanced Management — data risk assessments<br/>sensitivity labels · DLP for Copilot · Restricted Content Discovery and Access Control"]
+      GATE["Gateway · AI Gateway in Azure API Management — token limits and quotas<br/>semantic caching · content safety policy · token telemetry"]
+      MODEL["Model and agent · Microsoft Foundry guardrails and controls — Prompt Shields<br/>groundedness · PII · protected material · blocklists · spotlighting"]
+      RUN["Runtime · Microsoft Defender Security for AI — real-time protection over<br/>tool invocations · Defender for AI Services detections"]
+      DATA --> GATE
+      GATE --> MODEL
+      MODEL --> RUN
+    end
+  end
+`;
+
+const promptJourney = `
+flowchart TB
+  U["A user or another agent sends a prompt"] --> GW{"AI Gateway in API Management<br/>token limits"}
+  GW -->|"Over the tokens-<br/>per-minute limit"| R429["429 Too Many Requests"]
+  GW -->|"Over the total token<br/>quota for the period"| R403["403 Forbidden"]
+  GW -->|"Within both"| IN{"Foundry guardrail, input controls<br/>hate · violence · sexual · self-harm<br/>user prompt attack · document attack · PII"}
+  IN -->|"A control fires"| BLK["Filtered — the annotation records<br/>detected and filtered"]
+  IN -->|"Clean"| M["The model responds, then the output controls run —<br/>the same categories plus protected material,<br/>groundedness and custom blocklists"]
+  M --> DEF{"The agent invokes a tool, and Defender<br/>real-time protection evaluates the<br/>invocation before it runs"}
+  DEF -->|"A custom rule matches"| STOP["Blocked, and recorded<br/>as a behaviour"]
+  DEF -->|"Allowed"| DONE["The tool runs; the default rule<br/>still records the behaviour"]
+`;
+
+const caTargeting = `
+flowchart TB
+  Q["You want Conditional Access to govern what an agent can reach"] --> A{"Which OAuth flow is the agent using?"}
+  A -->|"On-behalf-of — a user signed in, and<br/>the agent acts as that user"| U["Target users and groups<br/>The user is the subject of the token exchange,<br/>so selecting agent identities would not match"]
+  A -->|"Client credentials — the agent acts<br/>as itself, with no user present"| AG["Target agent identities<br/>Scale with custom security attributes,<br/>and use agent risk as a condition"]
+`;
+
+const guardrailHeader = `POST https://<resource>.services.ai.azure.com/openai/v1/responses
+Authorization: Bearer <token>
+Content-Type: application/json
+
+# Select a named guardrail for this request. If the name does not match an
+# existing guardrail, the call fails with InvalidContentFilterPolicy.
+x-policy-id: contoso-public-facing
+
+{
+  "model": "gpt-5",
+  "input": "Summarise the attached policy document.",
+  "instructions": "You are a helpful assistant. \\"\\"\\" <documents> ...untrusted content... </documents> \\"\\"\\""
+}`;
+
+const apimLlm = `<inbound>
+  <!-- Cap each consumer's token consumption. Exceeding the per-minute rate
+       returns 429; exceeding the period quota returns 403. -->
+  <llm-token-limit counter-key="@(context.Subscription.Id)"
+                   tokens-per-minute="5000"
+                   estimate-prompt-tokens="true"
+                   remaining-tokens-variable-name="remainingTokens" />
+
+  <!-- Emit token counts as a custom metric, dimensioned per consumer. -->
+  <llm-emit-token-metric namespace="genai">
+    <dimension name="Subscription ID" value="@(context.Subscription.Id)" />
+  </llm-emit-token-metric>
+
+  <!-- Screen prompts with Azure AI Content Safety before they reach the model. -->
+  <llm-content-safety backend-id="content-safety-backend" shield-prompt="true">
+    <categories output-type="EightSeverityLevels">
+      <category name="SelfHarm" threshold="4" />
+      <category name="Violence" threshold="4" />
+    </categories>
+  </llm-content-safety>
+
+  <!-- Reuse a semantically similar previous completion instead of calling the model. -->
+  <llm-semantic-cache-lookup score-threshold="0.05"
+                             embeddings-backend-id="embeddings-backend"
+                             embeddings-backend-auth="system-assigned" />
+</inbound>`;
+---
+
+<NoteLayout
+  slug="ai-agent-security"
+  description="A cross-cutting deep dive on the SC-500 AI security material: SharePoint oversharing and Restricted Content Discovery, Purview DSPM, Microsoft Foundry guardrails and Prompt Shields, the AI Gateway in API Management, Microsoft Entra Agent ID and Conditional Access for agents, Defender real-time protection, Defender for AI Services and the Data and AI security dashboard."
+  intro="The AI material is listed as one sub-skill of Skill 3, but it reaches into Skill 1 for identity and Skill 4 for monitoring. This page follows it as one story — from the data an assistant can see, through the model and the gateway, to the agent identity acting on your behalf."
+  themeColor="#107c41"
+>
+  <p class="lead">
+    Generative AI does not create an entirely new set of security problems so much as it <strong>amplifies existing
+    ones at machine speed</strong>. Permissions that were technically wrong but practically harmless become a search
+    result. A user who would never have found a document now has it summarised for them. And an agent with a standing
+    credential can be talked into using it by text hidden inside a file it was asked to read.
+  </p>
+
+  <Mermaid code={stack} caption="Four control points, all inside one identity plane. An exam question usually describes a symptom at one layer; your job is to name the layer before you name the product." />
+
+  <h2 id="the-threats">The threats you are being asked to control</h2>
+  <div class="table-wrap">
+    <table class="tbl t-green">
+      <thead>
+        <tr><th>Threat</th><th>What it looks like</th><th>Primary control</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Oversharing</strong></td><td>Copilot surfaces a salary file from a site shared with "Everyone except external users"</td><td>Purview DSPM data risk assessments; SharePoint Restricted Content Discovery and Restricted Access Control</td></tr>
+        <tr><td><strong>User prompt injection (UPIA / jailbreak)</strong></td><td>A user talks the model out of its system instructions</td><td>Foundry Prompt Shields — user prompt attack control</td></tr>
+        <tr><td><strong>Cross-domain / indirect prompt injection (XPIA)</strong></td><td>Hidden instructions inside a document, email or web page the agent reads</td><td>Prompt Shields — document attack control, plus spotlighting</td></tr>
+        <tr><td><strong>Data exfiltration through the model</strong></td><td>Sensitive content leaves in a prompt or a completion</td><td>Purview DLP for Copilot, Foundry PII control, sensitivity labels honoured at retrieval</td></tr>
+        <tr><td><strong>Wallet abuse / denial of wallet</strong></td><td>One team or one attacker consumes the whole token quota</td><td>AI Gateway token limits and quotas</td></tr>
+        <tr><td><strong>Agent takeover and excessive agency</strong></td><td>A subverted agent uses its own standing permissions to act</td><td>Entra Agent ID plus Conditional Access, least-privilege agent permissions, Defender real-time protection over tool invocations</td></tr>
+        <tr><td><strong>Ungoverned "shadow" agents</strong></td><td>Agents created by makers that nobody is tracking</td><td>Agent inventory in Defender and in the Microsoft 365 admin center; sponsors and owners in ID Governance</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="data-layer">1 · The data layer: stop the assistant seeing what it should not</h2>
+  <p>
+    This is the single highest-value piece of work before deploying Copilot, and it is entirely conventional data
+    governance done properly.
+  </p>
+
+  <h3>Finding the oversharing</h3>
+  <ul>
+    <li><strong>Purview DSPM data risk assessments</strong> — an assessment runs automatically each week over the <strong>top 100 most-used SharePoint sites</strong>, and you can add custom assessments. It surfaces sites with sensitive data, risky sharing links and broad permissions, with remediation actions attached.</li>
+    <li><strong>SharePoint Advanced Management data access governance reports</strong> — sharing links, "Everyone except external users" (EEEU) usage, permission state for sites, OneDrive and files, and sensitivity labels applied to files.</li>
+    <li><strong>Content management assessment</strong> — finds sites with oversized audiences, EEEU, broken inheritance, inappropriate sharing, and sites that are inactive or ownerless.</li>
+    <li><strong>Site access review</strong> — delegates the review of those reports to the site owners who actually know whether the access is justified.</li>
+  </ul>
+
+  <h3>Containing it</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Control</th><th>Effect</th><th>Set at</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Restricted Content Discovery (RCD)</strong></td>
+          <td>The site's content stops appearing in organisation-wide search and in Copilot and agentic experiences. <strong>Permissions are unchanged</strong>, the content stays in the search index, and users can still reach content they own or have recently interacted with.</td>
+          <td>Per site, in the SharePoint admin center → Active sites → Settings, or <code>Set-SPOSite -RestrictContentOrgWideSearch $true</code></td>
+        </tr>
+        <tr>
+          <td><strong>Restricted Access Control (RAC)</strong></td>
+          <td>Only members of a named Microsoft Entra security group or Microsoft 365 group can access the site at all — <strong>even if they previously had permissions or a sharing link</strong>. A genuine access boundary.</td>
+          <td>Per site, under SharePoint admin center → Policies → Access control</td>
+        </tr>
+        <tr>
+          <td><strong>DLP for Microsoft 365 Copilot</strong></td>
+          <td>Excludes labelled content from being used to ground a Copilot response.</td>
+          <td>Purview DLP policy, Copilot location</td>
+        </tr>
+        <tr>
+          <td><strong>Sensitivity labels</strong></td>
+          <td>Encryption and usage rights travel with the file; Copilot honours them and inherits the label into generated content.</td>
+          <td>Purview information protection</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="RCD is discoverability, RAC is access">
+    <p>
+      The distinction is exam-shaped. "Prevent this site's content from turning up in Copilot answers while the owners
+      review permissions" is <strong>Restricted Content Discovery</strong> — it leaves access alone, which is why it can
+      be applied quickly and reversed. "Ensure only the HR team can open this site, regardless of existing permissions"
+      is <strong>Restricted Access Control</strong>. And note that RCD propagation is not instant — it depends on site
+      size and index load.
+    </p>
+  </Callout>
+
+  <Callout type="rename" title="Two things that have moved">
+    <p>
+      <strong>Restricted SharePoint Search is retiring.</strong> It was the temporary allow-list of sites usable by
+      Copilot; new enablement was blocked from <strong>31 July 2026</strong>, and Microsoft directs you to Restricted
+      Content Discovery instead. <strong>DSPM for AI is now "classic".</strong> Its capabilities have been folded into
+      the unified <strong>Data Security Posture Management</strong> experience organised around <em>data security
+      objectives</em> — one of which is "prevent data exposure in Microsoft 365 Copilot and Microsoft Copilot
+      interactions". Exam items written against the older list will still say "DSPM for AI".
+    </p>
+  </Callout>
+
+  <h3>Monitoring what the AI is actually doing</h3>
+  <p>
+    In Purview, <strong>Activity explorer</strong> has an <strong>AI activities</strong> view showing AI interactions,
+    the sensitive information types they contained, visits to generative AI websites, and DLP rule matches during those
+    interactions. Workloads are grouped as <em>Copilot experiences and agents</em>, <em>Enterprise AI apps</em> (such as
+    ChatGPT Enterprise) and <em>Other AI apps</em>. To see interactions with third-party AI sites at all, devices must be
+    onboarded to Purview — which in practice means enrolled in Intune and onboarded to Defender for Endpoint.
+  </p>
+
+  <h2 id="foundry-guardrails">2 · The model layer: Foundry guardrails and controls</h2>
+  <p>
+    In Microsoft Foundry, a <strong>guardrail</strong> is a named container of <strong>controls</strong>, and you assign
+    it to model deployments and to agents.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl t-green">
+      <thead>
+        <tr><th>Control</th><th>Applies at</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Hate, Violence, Sexual, Self-harm</td><td>User input and model output</td><td>Severity thresholds. These four can be <strong>overridden but never deleted</strong> from a guardrail.</td></tr>
+        <tr><td><strong>Prompt Shields — user prompt attack</strong></td><td>User input</td><td>Jailbreak attempts against the system instructions.</td></tr>
+        <tr><td><strong>Prompt Shields — document attack</strong></td><td>User input <em>and</em> tool responses</td><td>Indirect injection hidden in third-party content. The tool-response intervention point is what protects agents.</td></tr>
+        <tr><td>Protected material for text and for code</td><td>Output</td><td>Known copyrighted text and public-repository code.</td></tr>
+        <tr><td>Personally identifiable information</td><td>Input and output</td><td>Requires a recent API version.</td></tr>
+        <tr><td>Groundedness detection</td><td>Output</td><td>Flags claims unsupported by the provided source material. Streaming scenarios only.</td></tr>
+        <tr><td>Profanity and custom blocklists</td><td>Input and output</td><td>Your own terms and regular expressions.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <CodeBlock lang="http" label="foundry request" code={guardrailHeader} />
+
+  <Callout type="tip" title="Four guardrail facts that get tested">
+    <p>
+      <strong>One:</strong> Microsoft Default guardrails, such as <code>Default.V2</code>, <strong>cannot be
+      edited</strong> — create a custom guardrail instead. <strong>Two:</strong> when both a model and an agent have a
+      guardrail, <strong>the agent's guardrail wins</strong>. <strong>Three:</strong> a guardrail cannot be deleted while
+      models or agents are still assigned to it. <strong>Four:</strong> selecting a guardrail per request is done with
+      the <code>x-policy-id</code> header, and a name that does not exist returns{' '}
+      <code>InvalidContentFilterPolicy</code>.
+    </p>
+  </Callout>
+
+  <h3>Spotlighting</h3>
+  <p>
+    Spotlighting is extra protection against document attacks: it tags untrusted input documents by base64-encoding
+    them, so the model treats their content as lower-trust data rather than instructions. It is{' '}
+    <strong>off by default</strong>, has no direct cost, and is available only for models used through the{' '}
+    <strong>Chat Completions API</strong> — but the encoding increases the token count, which can push a long document
+    over the input limit or raise cost. Delimit untrusted content with{' '}
+    <code>&quot;&quot;&quot; &lt;documents&gt; … &lt;/documents&gt; &quot;&quot;&quot;</code> and JSON-escape it so the
+    safety system can parse it.
+  </p>
+  <p>
+    Foundry also offers a <strong>guided guardrail set-up</strong> for agents: a short questionnaire — who uses the
+    agent, where its inputs come from, whether it touches sensitive data or PII, whether it calls external tools, whether
+    it takes consequential actions, whether it generates code — that turns the answers into a recommended control set.
+  </p>
+
+  <h2 id="ai-gateway">3 · The gateway layer: AI Gateway in API Management</h2>
+  <p>
+    Foundry has a built-in <strong>AI Gateway</strong>, backed by Azure API Management and configured from{' '}
+    <strong>Foundry portal → Manage → AI Gateway</strong>. It governs ingress to a <em>single</em> Foundry resource;
+    for anything broader you run API Management standalone.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Capability</th><th>Policy</th><th>Behaviour</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Token rate limiting</td><td><code>llm-token-limit</code></td><td>Tokens per minute per counter key. Exceeding it returns <strong><code>429 Too Many Requests</code></strong>.</td></tr>
+        <tr><td>Total token quota</td><td><code>llm-token-limit</code></td><td>A budget per hour, day, week, month or year. Exceeding it returns <strong><code>403 Forbidden</code></strong>.</td></tr>
+        <tr><td>Token telemetry</td><td><code>llm-emit-token-metric</code></td><td>Emits consumption as a custom metric with your own dimensions — the basis for chargeback.</td></tr>
+        <tr><td>Content safety</td><td><code>llm-content-safety</code></td><td>Screens prompts through Azure AI Content Safety at the gateway, independently of the model's own guardrail.</td></tr>
+        <tr><td>Semantic caching</td><td><code>llm-semantic-cache-store</code> / <code>-lookup</code></td><td>Reuses completions for semantically similar prompts. Needs an external RediSearch-compatible cache such as Azure Managed Redis.</td></tr>
+        <tr><td>Backend pools and circuit breaking</td><td>Backend configuration</td><td>Spread load across deployments, and fail over from provisioned throughput to pay-as-you-go.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <CodeBlock lang="xml" label="apim policy" code={apimLlm} />
+
+  <p>
+    Limits apply at the <strong>project</strong> level, so each project gets its own tokens-per-minute and quota. Creating
+    the gateway needs Contributor or Owner to create the API Management instance (or API Management Service Contributor
+    to reuse one), plus a Foundry owner-level role on the Foundry resource. The gateway also registers{' '}
+    <strong>custom agents</strong> and <strong>MCP tools</strong> hosted anywhere into the Foundry inventory for
+    governance.
+  </p>
+
+  <Callout type="exam" title="Remember the two status codes">
+    <p>
+      <strong>429</strong> means the caller went too fast — it is a rate limit and it clears in a minute.
+      <strong>403</strong> means the caller has spent its budget for the period. A scenario describing an app that
+      "worked all morning and then stopped entirely for the rest of the day" is the quota and a 403, not the TPM limit.
+    </p>
+  </Callout>
+
+  <h2 id="entra-agent-id">4 · The identity layer: Microsoft Entra Agent ID</h2>
+  <p>
+    Agent ID extends Microsoft Entra to AI agents, so an agent is a governed non-human identity rather than a shared app
+    registration. <strong>Agent identity blueprints</strong> act as templates, creating individual agent identities in a
+    parent–child relationship so policy applies consistently across large fleets. It supports OAuth 2.0, the Model
+    Context Protocol (MCP) and agent-to-agent (A2A) protocols, and third-party agents from platforms such as AWS Bedrock
+    can be brought in through the Entra ID Auth SDK sidecar or workload identity federation.
+  </p>
+  <p>
+    Agents created in Copilot Studio automatically receive an agent identity, with the maker recorded as the{' '}
+    <strong>sponsor</strong>. Microsoft's own agents — the Conditional Access Optimization Agent, for example — carry one
+    too, so their queries are attributed to an agent rather than to a person.
+  </p>
+
+  <Mermaid code={caTargeting} caption="The flow decides what the policy targets. Getting this backwards is the single most likely mistake on an Agent ID question." />
+
+  <div class="table-wrap">
+    <table class="tbl t-green">
+      <thead>
+        <tr><th>Capability</th><th>What it gives you</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Conditional Access for agents</strong></td><td>Adaptive policies over agent access, with <strong>agent risk</strong> as a real-time condition. Microsoft-managed policies provide a baseline that blocks high-risk agents. Scale targeting with <strong>custom security attributes</strong> rather than naming agents one by one.</td></tr>
+        <tr><td><strong>ID Protection for agents</strong></td><td>Risky-agent detections based on the agent's own behaviour and on the risk of the user it acts for. <strong>Learning mode</strong> suppresses behavioural alerts for agents with too little history, while a parallel detection still catches genuinely malicious early-life behaviour. Reports need Security Administrator, Security Operator or Security Reader; configuring agent-risk policies needs Conditional Access Administrator.</td></tr>
+        <tr><td><strong>ID Governance for agents</strong></td><td>Access packages, sponsors and owners, and time-bound access — so agents are onboarded and retired like employees and no agent is left orphaned.</td></tr>
+        <tr><td><strong>Network controls</strong></td><td>Global Secure Access applies web content filtering, threat intelligence filtering and file filtering to agent traffic, including for Copilot Studio agents.</td></tr>
+        <tr><td><strong>Sign-in and audit logs</strong></td><td>Agent authentication and activity are logged in Microsoft Entra and viewable in the admin center's <strong>Agent identities</strong> view.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="Preview status and licensing">
+    <p>
+      Microsoft Entra Agent ID is in <strong>preview</strong>. The Agent ID platform itself is available to all Entra
+      customers, but <strong>extending Entra security features to agents requires Microsoft Agent 365</strong> — included
+      with Microsoft 365 E7 and available as an add-on to E5, A5 or Business Premium. Treat any exam answer that assumes
+      agent Conditional Access "just works" with an E3 licence with suspicion.
+    </p>
+  </Callout>
+
+  <h2 id="runtime-protection">5 · The runtime layer: Defender real-time protection</h2>
+  <p>
+    Guardrails screen text. Real-time protection screens <strong>actions</strong> — it inspects agent activity
+    throughout the agentic loop and can stop a risky tool invocation before it executes.
+  </p>
+
+  <Mermaid code={promptJourney} caption="A single request passing every gate, in order. Notice that the last one is about the tool call, not the text." />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Agent type</th><th>What is evaluated</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Copilot Studio agents</strong></td><td>Tool invocations. Only agents using <strong>generative orchestration</strong> are covered — classic agents are skipped.</td></tr>
+        <tr><td><strong>Foundry agents</strong></td><td>User requests, agent responses, tool invocations <em>and</em> tool responses — the broadest coverage.</td></tr>
+        <tr><td><strong>Agent 365 agents</strong></td><td>Tool invocations evaluated through Work IQ MCP, including customer MCP tools onboarded to Agent 365.</td></tr>
+        <tr><td><strong>Local agents on endpoints</strong></td><td>Covered separately by AI agent runtime protection in Microsoft Defender for Endpoint, which must be in active mode.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Default rule versus custom rules</h3>
+  <ul>
+    <li>The <strong>default rule audits every agent</strong>: matching activity is recorded as a <em>behaviour</em>, and nothing is stopped. This is how you gain visibility before enforcing.</li>
+    <li><strong>Custom rules block</strong> matching actions before they execute, and also record the behaviour. Scope them narrowly to high-confidence threats and specific agents.</li>
+    <li>Behaviours land in the <code>BehaviorInfo</code> table in advanced hunting — what happened, why it was risky, and which agent, user and tool were involved — so they can drive custom detections and downstream automation.</li>
+    <li>Near-real-time detections surface as alerts <strong>only in audit mode</strong>; once a blocking rule covers an agent, alerts are not generated for it.</li>
+  </ul>
+
+  <h3>Turning it on for Copilot Studio</h3>
+  <ol class="steps">
+    <li>In the <strong>Microsoft Defender portal</strong>, open <strong>Security for AI</strong> → <strong>Get started</strong> and select the <strong>Copilot Studio</strong> step.</li>
+    <li>Toggle <strong>Real-time protection</strong> on.</li>
+    <li>Copy the <strong>Power Platform integration URL</strong> and send it to your Power Platform administrator, who completes onboarding on their side using a Microsoft Entra application.</li>
+    <li>Take the <strong>App ID</strong> back from them, paste it into the Defender portal and save. The Copilot Studio step then shows <strong>Connected</strong>.</li>
+    <li>Connect the <strong>Microsoft 365 connector</strong> as well — without it, blocking still works but no alerts or incidents appear in the Defender portal.</li>
+  </ol>
+  <p>
+    Makers see the result in Copilot Studio as a <strong>Protection status</strong> column on the Agents page, reading{' '}
+    <em>Protected</em>, <em>Needs review</em> or <em>Unknown</em>, broken down into threat detection, authentication,
+    policy and content moderation.
+  </p>
+
+  <Callout type="rename" title="Where agent security has landed">
+    <p>
+      From <strong>1 July 2026</strong>, agent security capabilities for Copilot Studio and Foundry agents require a{' '}
+      <strong>Microsoft Agent 365</strong> licence rather than being carried by Defender for Cloud Apps and Defender for
+      Cloud. Three consequences worth knowing: the agent inventory table moved from <code>AIAgentsInfo</code> to{' '}
+      <strong><code>AgentsInfo</code></strong>; real-time protection rules are defined under{' '}
+      <strong>Settings → Security for AI → Policies &amp; rules → Real-time protection</strong>; and Defender CSPM still
+      discovers Foundry accounts and projects, but <em>agent-level</em> discovery, posture and threat detection now need
+      the Agent 365 licence. The Defender for AI Services plan continues to protect Foundry <em>models</em>, including
+      Azure OpenAI.
+    </p>
+  </Callout>
+
+  <h2 id="posture-and-monitoring">6 · Posture and monitoring for AI</h2>
+  <div class="table-wrap">
+    <table class="tbl t-green">
+      <thead>
+        <tr><th>Surface</th><th>Where</th><th>Answers</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>AI security posture management</strong></td>
+          <td>Included in <strong>Defender CSPM</strong></td>
+          <td>Discovers generative AI workloads agentlessly across Azure OpenAI, Azure Machine Learning and Amazon Bedrock; surfaces the models, SDKs and configurations in use; and runs attack path analysis over them — for example grounding data exposed to the internet and open to poisoning.</td>
+        </tr>
+        <tr>
+          <td><strong>Defender for AI Services</strong></td>
+          <td>A workload protection plan in <strong>Defender for Cloud</strong></td>
+          <td>Runtime detection for generative AI workloads — jailbreak attempts detected by Prompt Shields, data exposure, wallet abuse and suspicious access patterns — enriched with Microsoft threat intelligence.</td>
+        </tr>
+        <tr>
+          <td><strong>Data and AI security dashboard</strong></td>
+          <td>Defender for Cloud</td>
+          <td>One view of data and AI resources, their protection coverage, top issues, sensitive data findings, internet-exposed grounding resources and prompt-scanning volumes.</td>
+        </tr>
+        <tr>
+          <td><strong>Security Dashboard for AI</strong></td>
+          <td><code>ai.security.microsoft.com</code></td>
+          <td>The <em>leadership</em> view across Entra, Defender, Purview and Security Copilot: which AI assets exist, their posture, and where to act — including third-party models, apps, agents and MCP servers.</td>
+        </tr>
+        <tr>
+          <td><strong>Agent inventory</strong></td>
+          <td>Defender portal, and the Microsoft 365 admin center</td>
+          <td>Which agents exist, who sponsors them, what they connect to, and whether they are protected. Advanced hunting exposes the same data in <code>AgentsInfo</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="What the Data and AI security dashboard needs">
+    <p>
+      It is enabled at subscription level and only fills up if the feeding plans are on: <strong>Defender CSPM</strong>{' '}
+      with the <strong>sensitive data discovery</strong> extension, <strong>Defender for Storage</strong>,{' '}
+      <strong>Defender for Databases</strong> and <strong>threat protection for AI workloads</strong>. The minimum
+      privileged role to view it is <strong>Security explorer</strong>. A question describing an empty dashboard is
+      asking you to spot a missing plan, not a missing permission.
+    </p>
+  </Callout>
+
+  <h3>Blast radius</h3>
+  <p>
+    "Analyse blast radius for security risks related to Entra Agent ID by using Defender XDR" is the objective's phrase
+    for a simple question: <strong>if this agent is subverted, what can it reach?</strong> You answer it by joining the
+    agent's identity and its granted permissions to the exposure graph — the agent inventory in the Defender portal for
+    the identity and its connections, and Microsoft Security Exposure Management's attack paths and{' '}
+    <strong>critical asset</strong> classification for what lies downstream. The remediation is almost always the same
+    two moves: narrow the agent's permissions, and put Conditional Access in front of them.
+  </p>
+
+  <h2 id="managing-agents">7 · Managing agents in the Microsoft 365 admin center</h2>
+  <p>
+    The administrative counterpart to all of the above. In the Microsoft 365 admin center you manage the agent
+    inventory across Microsoft 365 — who owns each agent, who it is available to, its lifecycle, and which agents makers
+    are permitted to create and publish at all. Power Platform administrators set the corresponding policies for
+    Copilot Studio, including data loss prevention policies over connectors, which is why the Copilot Studio protection
+    status surfaces <em>Policies</em> as its own category.
+  </p>
+
+  <h2 id="scenario-lookup">Scenario-to-answer lookup</h2>
+  <div class="table-wrap">
+    <table class="tbl t-slate">
+      <thead>
+        <tr><th>The scenario says…</th><th>The answer is…</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>"Copilot returns content from a site that is under permissions review"</td><td>Restricted Content Discovery on that site</td></tr>
+        <tr><td>"Only the HR security group may access the site, regardless of existing links"</td><td>Restricted Access Control</td></tr>
+        <tr><td>"Identify which sites are overshared before we roll out Copilot"</td><td>Purview DSPM data risk assessments, plus SharePoint Advanced Management data access governance reports</td></tr>
+        <tr><td>"Block a document containing hidden instructions from steering the agent"</td><td>Prompt Shields document attack control, at the tool response intervention point; add spotlighting</td></tr>
+        <tr><td>"One team must not be able to exhaust the model's capacity"</td><td>AI Gateway token limit per project or subscription key</td></tr>
+        <tr><td>"The app stopped working entirely for the rest of the day"</td><td>The total token quota — a 403, not a 429</td></tr>
+        <tr><td>"Require phishing-resistant MFA when an agent acts for a user"</td><td>A Conditional Access policy targeting <strong>users and groups</strong>, because the flow is on-behalf-of</td></tr>
+        <tr><td>"Block an autonomous agent when its risk is high"</td><td>A Conditional Access policy targeting <strong>agent identities</strong>, with agent risk as the condition</td></tr>
+        <tr><td>"Stop the agent from running a dangerous tool, not just from saying something"</td><td>A custom real-time protection rule in Defender Security for AI</td></tr>
+        <tr><td>"See which agents exist and who is responsible for them"</td><td>Agent inventory in the Defender portal and the Microsoft 365 admin center; sponsors in Entra ID Governance</td></tr>
+        <tr><td>"Detect jailbreak attempts against our Azure OpenAI deployment"</td><td>Defender for AI Services, in Defender for Cloud's workload protection</td></tr>
+        <tr><td>"Show the CISO our overall AI risk in one place"</td><td>Security Dashboard for AI</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="Check the preview line before you memorise">
+    <p>
+      Much of this surface is in preview and changing quarterly: Entra Agent ID, Conditional Access for agents,
+      real-time protection for Copilot Studio and Foundry agents, AI Gateway in Foundry, and spotlighting. The exam
+      states that it may include commonly used preview features, so you cannot skip them — but do re-read the Microsoft
+      Learn page for each one shortly before you sit, because the portal paths in particular have already moved once.
+    </p>
+  </Callout>
+
+  <p>
+    Next: <a href={href('exam-tips')}>Exam tips &amp; caveats</a>, for the final week.
+  </p>
+</NoteLayout>

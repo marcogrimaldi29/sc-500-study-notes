@@ -1,0 +1,21 @@
+---
+import { href } from '../lib/urls';
+
+interface Props {
+  slug: string;
+  badge: string;
+  title: string;
+  accent: string;
+  /** Call to action in the card footer. */
+  cta?: string;
+}
+
+const { slug, badge, title, accent, cta = 'Explore →' } = Astro.props;
+---
+
+<a class="nav-card" href={href(slug)} style={`--accent:${accent}`}>
+  <span class="nc-badge">{badge}</span>
+  <h3>{title}</h3>
+  <p><slot /></p>
+  <span class="nc-foot">{cta}</span>
+</a>

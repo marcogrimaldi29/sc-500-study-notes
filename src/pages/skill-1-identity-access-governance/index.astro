@@ -1,0 +1,642 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+// Kept shallow and wide on purpose: depth drives height, label length drives
+// width, and a six-level chain of narrow boxes is what makes a diagram render
+// as a thin ribbon with empty space either side.
+const caFlow = `
+flowchart TB
+  A["Sign-in attempt — first factor has already succeeded"] --> B{"Does every assignment and condition match?<br/>users and workload identities · target resources · network · device · risk"}
+  B -->|"No"| D["This policy does not apply to this sign-in"]
+  B -->|"Yes"| E{"Is the policy set to Block?"}
+  E -->|"Yes"| F["Access denied — no grant control can override a block"]
+  E -->|"No"| G["Grant controls — MFA · authentication strength · compliant device<br/>hybrid joined · approved app · app protection · terms of use · password change"]
+  G --> H["Session controls attached to the token — sign-in frequency · CAE<br/>persistent browser · app enforced restrictions · token protection"]
+  H --> I["Access granted, with those session constraints"]
+`;
+
+const pimFlow = `
+flowchart TB
+  E["Eligible assignment — the user holds zero standing permission"] --> A["The user requests activation in PIM"]
+  A --> C{"What did you require on the role setting?"}
+  C -->|"MFA, justification, a ticket number"| S["Self-service activation, immediate"]
+  C -->|"Approval"| P["An approver grants or denies; the requester is notified"]
+  S --> ACT["Active for the maximum activation duration — configurable from 1 to 24 hours"]
+  P --> ACT
+  ACT --> EXP["Deactivates automatically · request, approval and activation are all audited"]
+`;
+
+const kvFlow = `
+flowchart TB
+  R["A caller asks a key vault for a secret"] --> N{"Does the request reach<br/>the vault at all?"}
+  N -->|"Public access disabled,<br/>or the firewall rejects<br/>the source"| BLOCK["Forbidden at the network layer —<br/>the permission model is<br/>never consulted"]
+  N -->|"Allowed by a firewall rule,<br/>a selected virtual network, a trusted<br/>services bypass or a private endpoint"| P{"Which permission model<br/>is the vault configured for?"}
+  P -->|"Azure RBAC —<br/>recommended"| RB["Needs a data-plane role such as<br/>Key Vault Secrets User — Owner and<br/>Contributor alone grant nothing here"]
+  P -->|"Vault access<br/>policy — legacy"| AP["Needs an access policy entry<br/>granting Get on Secrets"]
+  RB --> OK["Secret returned"]
+  AP --> OK
+`;
+
+const policyOrder = `
+flowchart TB
+  A["A create or update request arrives at Azure Resource Manager"] --> B["Disabled — the rule is skipped entirely"]
+  B --> C["Append and Modify — the request is altered before it is written"]
+  C --> D["Deny — the request is rejected outright"]
+  D --> E["Audit — the request proceeds; non-compliance is recorded"]
+  E --> F["The resource provider creates or updates the resource"]
+  F --> G["AuditIfNotExists and DeployIfNotExists — evaluated once the resource exists"]
+`;
+
+const customRole = `{
+  "Name": "Virtual Machine Operator",
+  "IsCustom": true,
+  "Description": "Start, restart and monitor virtual machines, but never delete one.",
+  "Actions": [
+    "Microsoft.Compute/virtualMachines/start/action",
+    "Microsoft.Compute/virtualMachines/restart/action",
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Insights/alertRules/*",
+    "Microsoft.Resources/subscriptions/resourceGroups/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/providers/Microsoft.Management/managementGroups/contoso-platform"
+  ]
+}`;
+
+const denyIfPublic = `{
+  "policyRule": {
+    "if": {
+      "allOf": [
+        { "field": "type", "equals": "Microsoft.Storage/storageAccounts" },
+        {
+          "field": "Microsoft.Storage/storageAccounts/allowBlobPublicAccess",
+          "notEquals": "false"
+        }
+      ]
+    },
+    "then": { "effect": "deny" }
+  }
+}`;
+---
+
+<NoteLayout
+  slug="skill-1-identity-access-governance"
+  description="SC-500 Skill 1: Privileged Identity Management, Conditional Access, MFA and passwordless, app registrations and consent, managed identities, Azure Key Vault, Azure Policy, RBAC and custom roles, resource locks, Azure Backup security and infrastructure as code."
+  intro="Twenty to twenty-five per cent of the exam, and the foundation for everything after it. Three blocks: hardening Microsoft Entra ID, protecting secrets and keys in Azure Key Vault, and governing the estate with policy, roles, locks and code."
+  themeColor="#00787f"
+>
+  <p class="lead">
+    This domain is where the exam tests <em>standing privilege</em> hardest. If you remember one thing: almost every
+    keyed answer here removes a permanent permission, narrows a scope, or moves a credential out of a configuration
+    file. Guess in that direction when you are unsure.
+  </p>
+
+  <h2 id="privileged-identity-management">1.1 Privileged Identity Management</h2>
+  <p>
+    PIM turns permanent role assignments into <strong>eligible</strong> ones that a user activates when they need them.
+    It covers three things, and the exam expects you to know which is which:
+  </p>
+  <ul>
+    <li><strong>PIM for Microsoft Entra roles</strong> — Global Administrator, Security Administrator and friends.</li>
+    <li><strong>PIM for Azure resources</strong> — Azure RBAC roles at management group, subscription, resource group or resource scope.</li>
+    <li><strong>PIM for Groups</strong> — membership or ownership of a role-assignable group, which is how you make <em>anything</em> group-based eligible, including third-party SaaS access and Azure roles assigned to a group.</li>
+  </ul>
+
+  <Mermaid
+    code={pimFlow}
+    caption="The PIM activation path. Everything on it — the request, the approval, the activation and the expiry — lands in the PIM audit log."
+  />
+
+  <h3>Settings you need to be able to place</h3>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th>Setting</th><th>Lives under</th><th>What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Activation maximum duration</td><td>Role settings → Activation</td><td>1 to 24 hours. Shorter is the safer answer.</td></tr>
+        <tr><td>Require MFA on activation</td><td>Role settings → Activation</td><td>Forces a fresh strong authentication at activation time.</td></tr>
+        <tr><td>Require Microsoft Entra Conditional Access authentication context</td><td>Role settings → Activation</td><td>The stronger modern option — lets a CA policy (phishing-resistant MFA, compliant device) gate the activation.</td></tr>
+        <tr><td>Require justification / ticket information</td><td>Role settings → Activation</td><td>Free text or an ITSM ticket number, recorded in the audit log.</td></tr>
+        <tr><td>Require approval to activate</td><td>Role settings → Activation</td><td>Names specific approvers; without one, Privileged Role Administrators approve.</td></tr>
+        <tr><td>Allow permanent eligible / active assignment</td><td>Role settings → Assignment</td><td>Turn both off to force every assignment to carry an expiry.</td></tr>
+        <tr><td>Expire eligible / active assignments after</td><td>Role settings → Assignment</td><td>Eligible assignments can run to a year; active assignments are usually far shorter.</td></tr>
+        <tr><td>Access reviews</td><td>PIM → Access reviews (or ID Governance)</td><td>Recurring attestation that each assignment is still needed, with self-review, manager or named reviewers.</td></tr>
+        <tr><td>Alerts</td><td>PIM → Alerts</td><td>"Too many Global Administrators", "roles are being assigned outside of PIM", "administrators aren't using their privileged roles".</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="Who can configure PIM">
+    <p>
+      To manage PIM <strong>for Microsoft Entra roles</strong> you need <strong>Privileged Role Administrator</strong>{' '}
+      (or Global Administrator). To manage PIM <strong>for Azure resources</strong> you need <strong>Owner</strong> or{' '}
+      <strong>User Access Administrator</strong> on the scope. They are different systems with different
+      administrators — a Privileged Role Administrator cannot configure PIM on a subscription they have no Azure rights
+      over. PIM requires <strong>Microsoft Entra ID P2</strong> (or Microsoft Entra ID Governance).
+    </p>
+  </Callout>
+
+  <Callout type="tip" title="Break-glass accounts stay out of PIM">
+    <p>
+      Keep at least two <strong>emergency access accounts</strong> with <em>permanent</em> Global Administrator, cloud-only,
+      excluded from Conditional Access policies and from PIM, with credentials in a physical safe and sign-ins alerted on.
+      An exam answer that puts every Global Administrator behind PIM and MFA with no exclusion is the wrong answer —
+      a federation or MFA outage would lock the tenant out entirely.
+    </p>
+  </Callout>
+
+  <h2 id="conditional-access">1.2 Conditional Access</h2>
+  <p>
+    Conditional Access is the Zero Trust policy engine: <strong>if these signals, then these controls</strong>. It runs
+    after first-factor authentication succeeds, and it is the last gate before a token is issued.
+  </p>
+  <Mermaid code={caFlow} caption="Conditional Access evaluation. Every policy that matches is applied, and a Block in any one of them wins outright." />
+
+  <h3>The anatomy of a policy</h3>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th>Section</th><th>What you can set</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Users</strong></td>
+          <td>Users and groups, directory roles, guest and external user types, <strong>workload identities</strong> (service principals and managed identities), and exclusions. Always exclude your break-glass accounts.</td>
+        </tr>
+        <tr>
+          <td><strong>Target resources</strong></td>
+          <td>Cloud apps, <strong>user actions</strong> (register security information, register or join a device), <strong>Global Secure Access</strong> traffic profiles, and <strong>authentication context</strong> (the hook PIM and sensitivity labels use).</td>
+        </tr>
+        <tr>
+          <td><strong>Network</strong></td>
+          <td>Named locations — IP ranges, countries, and <strong>Global Secure Access compliant network</strong>.</td>
+        </tr>
+        <tr>
+          <td><strong>Conditions</strong></td>
+          <td>User risk, sign-in risk, <strong>insider risk</strong>, device platforms, client apps, <strong>filter for devices</strong> (a rule over device attributes, including extension attributes), and authentication flows (device code flow, authentication transfer).</td>
+        </tr>
+        <tr>
+          <td><strong>Grant</strong></td>
+          <td>Block, or require: MFA, <strong>authentication strength</strong>, compliant device, Microsoft Entra hybrid joined device, approved client app, app protection policy, password change, terms of use. Combine with <em>require all</em> or <em>require one</em>.</td>
+        </tr>
+        <tr>
+          <td><strong>Session</strong></td>
+          <td>App enforced restrictions, Conditional Access App Control (Defender for Cloud Apps), sign-in frequency, persistent browser session, <strong>customise continuous access evaluation</strong>, disable resilience defaults, <strong>require token protection</strong>, and a Global Secure Access security profile.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Authentication strengths</h3>
+  <p>
+    "Require MFA" is coarse. <strong>Authentication strength</strong> lets you demand a specific class of credential.
+    Three are built in, and you can author custom strengths from the allowed combinations list:
+  </p>
+  <ul>
+    <li><strong>Multifactor authentication</strong> — anything that counts as MFA, the equivalent of the old checkbox.</li>
+    <li><strong>Passwordless MFA</strong> — Windows Hello for Business, passkeys (FIDO2), certificate-based authentication (multifactor), Microsoft Authenticator passwordless phone sign-in.</li>
+    <li><strong>Phishing-resistant MFA</strong> — Windows Hello for Business, passkeys (FIDO2), certificate-based authentication (multifactor). <em>Authenticator push is not phishing-resistant.</em></li>
+  </ul>
+
+  <Callout type="exam" title="Deploy in this order, every time">
+    <ol class="steps" style="margin-top:8px">
+      <li><strong>Report-only.</strong> Create the policy in report-only mode and let it run. Results appear in the sign-in logs under the Conditional Access tab.</li>
+      <li><strong>What If.</strong> Simulate a specific user, app and condition set to see which policies would apply and why.</li>
+      <li><strong>Pilot.</strong> Scope to a small group, then widen.</li>
+      <li><strong>On.</strong> With break-glass accounts excluded.</li>
+    </ol>
+    <p style="margin-top:10px">
+      Any scenario that says "without affecting users" or "validate the impact first" is asking for{' '}
+      <strong>report-only</strong>; any scenario that says "for one specific user" is asking for <strong>What If</strong>.
+    </p>
+  </Callout>
+
+  <Callout type="warn" title="Continuous access evaluation is not sign-in frequency">
+    <p>
+      <strong>Sign-in frequency</strong> is a timer — re-authenticate every <em>n</em> hours or days.
+      <strong>Continuous access evaluation (CAE)</strong> is event-driven: when a critical event fires (the account is
+      disabled or deleted, the password changes, MFA is enabled, an admin explicitly revokes sessions, or ID Protection
+      raises high user risk), the resource provider rejects the still-valid token in near real time. CAE also enforces
+      IP-based named locations at the resource. They solve different problems and both can be needed.
+    </p>
+  </Callout>
+
+  <h2 id="authentication-methods">1.3 Authentication methods, MFA and passwordless</h2>
+  <p>
+    Methods are managed in one place: <strong>Microsoft Entra admin center → Entra ID → Authentication methods →
+    Policies</strong>. Each method is enabled for all users or for named groups, with exclusions, and most carry their
+    own configuration.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th>Method</th><th>Strength</th><th>Notes worth remembering</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Passkeys (FIDO2)</td><td>Phishing-resistant</td><td>Security keys or device-bound passkeys in Microsoft Authenticator. Restrict by AAGUID to allow only approved key models.</td></tr>
+        <tr><td>Windows Hello for Business</td><td>Phishing-resistant</td><td>Biometric or PIN bound to TPM hardware on a specific device.</td></tr>
+        <tr><td>Certificate-based authentication</td><td>Phishing-resistant when multifactor</td><td>Direct against Entra ID, no AD FS. Authentication binding rules decide whether a certificate counts as single or multifactor.</td></tr>
+        <tr><td>Microsoft Authenticator</td><td>MFA; passwordless phone sign-in is passwordless but not phishing-resistant</td><td>Number matching plus app and location context are on by default and cannot be disabled.</td></tr>
+        <tr><td>Temporary Access Pass (TAP)</td><td>Bootstrap credential</td><td>A time-limited passcode, one-time or multi-use, for onboarding and for recovering a lost passkey.</td></tr>
+        <tr><td>OATH tokens</td><td>MFA</td><td>Hardware or software TOTP. Use when phones are banned from the floor.</td></tr>
+        <tr><td>SMS and voice</td><td>Weakest MFA</td><td>Vulnerable to SIM swap and interception; the exam treats them as the option to migrate away from.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="tip" title="Security defaults vs Conditional Access">
+    <p>
+      <strong>Security defaults</strong> are a free, all-or-nothing baseline: MFA for everyone, MFA enforced for
+      administrators, legacy authentication blocked, privileged action protection. They cannot be customised or scoped,
+      and they are <strong>mutually exclusive with Conditional Access</strong> — you must disable them before you can
+      enable a single CA policy. Any question mentioning exclusions, groups or named locations has ruled security
+      defaults out.
+    </p>
+  </Callout>
+
+  <h2 id="application-identity">1.4 Application identity, consent and permissions</h2>
+  <p>
+    Two objects, one application. Getting them straight is worth several marks.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th></th><th>App registration</th><th>Enterprise application</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Object</td><td>Application object — the global definition</td><td>Service principal — the local instance in <em>this</em> tenant</td></tr>
+        <tr><td>Lives</td><td>In the tenant that owns the app, once</td><td>In every tenant the app is used in</td></tr>
+        <tr><td>You configure</td><td>Redirect URIs, credentials, exposed API and scopes, app roles, requested API permissions, token configuration</td><td>User assignment and visibility, SSO, provisioning, granted permissions, Conditional Access targeting</td></tr>
+        <tr><td>Credentials</td><td>Client secret, certificate, or a <strong>federated identity credential</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Delegated versus application permissions</h3>
+  <ul>
+    <li>
+      <strong>Delegated</strong> — the app acts <em>on behalf of a signed-in user</em>. Effective access is the
+      intersection of the app's granted scope and the user's own rights, so a delegated{' '}
+      <code>Files.ReadWrite.All</code> still only reaches files that user can already reach.
+    </li>
+    <li>
+      <strong>Application</strong> — the app acts <em>as itself</em>, with no user present. There is no intersection to
+      save you: an application-permission <code>Files.Read.All</code> reads every file in the tenant. These{' '}
+      <strong>always require admin consent</strong>.
+    </li>
+  </ul>
+
+  <h3>Consent settings</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Setting</th><th>Where</th><th>Effect</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>User consent for applications</td><td>Enterprise applications → Consent and permissions</td><td>Three options: <strong>do not allow</strong>; <strong>allow for verified publishers, for selected permissions</strong> (the recommended middle ground); <strong>allow for all apps</strong>.</td></tr>
+        <tr><td>Admin consent workflow</td><td>Enterprise applications → Admin consent settings</td><td>Lets a blocked user request access, routing it to named reviewers instead of leaving them stuck.</td></tr>
+        <tr><td>Group owner consent</td><td>Consent and permissions</td><td>Whether group owners may consent to apps reaching their group's data.</td></tr>
+        <tr><td>Risk-based step-up consent</td><td>Consent and permissions</td><td>Blocks user consent when the request is judged risky and forces admin review.</td></tr>
+        <tr><td>Grant admin consent</td><td>On the app's API permissions blade</td><td>Tenant-wide consent for every user at once. Needs Privileged Role Administrator, Application Administrator or Cloud Application Administrator.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="Illicit consent grant, the attack this exists for">
+    <p>
+      An attacker phishes a user into consenting to a malicious multi-tenant app that requests{' '}
+      <code>Mail.Read</code> and <code>offline_access</code>. No password is stolen, MFA is never challenged, and the
+      refresh token survives a password reset. The defences the exam wants: restrict user consent, turn on the admin
+      consent workflow, review the <strong>OAuth permission grants</strong> and <strong>app consent</strong> in
+      Enterprise applications, and revoke the service principal's grants and sign-in ability. Defender for Cloud Apps
+      app governance surfaces these as OAuth app alerts.
+    </p>
+  </Callout>
+
+  <h2 id="managed-identities">1.5 Managed identities and workload identity federation</h2>
+  <p>
+    A managed identity is a service principal Azure creates and rotates for you, so a resource can authenticate to
+    Microsoft Entra ID <strong>without a credential stored anywhere</strong>. It is the answer to almost every "remove
+    the connection string from the app" question.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th></th><th>System-assigned</th><th>User-assigned</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Lifecycle</td><td>Created with the resource, deleted with it</td><td>A standalone Azure resource with its own lifecycle</td></tr>
+        <tr><td>Sharing</td><td>One identity, one resource</td><td>One identity assigned to many resources</td></tr>
+        <tr><td>Use when</td><td>A single workload needs its own tightly bound identity</td><td>A fleet, or a scale set, needs one consistent identity, or role assignments must exist before the resource does</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Code retrieves a token from the local <strong>Azure Instance Metadata Service</strong> endpoint; in practice you use{' '}
+    <code>DefaultAzureCredential</code> or <code>ManagedIdentityCredential</code> from the Azure Identity library and
+    never see it.
+  </p>
+
+  <Callout type="code-note" title="Workload identity federation">
+    <p>
+      For workloads <em>outside</em> Azure — a GitHub Actions job, a GitLab pipeline, a Kubernetes service account,
+      another cloud — you cannot use a managed identity. Instead add a <strong>federated identity credential</strong> to
+      an app registration or user-assigned managed identity, which trusts an external issuer and subject. The pipeline
+      then exchanges its own OIDC token for a Microsoft Entra token. Same benefit: no secret to store, no secret to
+      rotate, no secret to leak. This is the modern answer to "our deployment pipeline holds a client secret that
+      expires every year".
+    </p>
+  </Callout>
+
+  <h2 id="azure-key-vault">1.6 Azure Key Vault</h2>
+  <p>
+    Key Vault is where SC-500 puts almost all of its "protect the credential" marks. Know the deployment choices, the
+    two access models, the network controls and the two safety nets.
+  </p>
+
+  <h3>Choosing the offering</h3>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th></th><th>Key Vault Standard</th><th>Key Vault Premium</th><th>Managed HSM</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Key protection</td><td>Software-protected, multi-tenant</td><td>HSM-backed, multi-tenant</td><td>Single-tenant, dedicated HSM pool</td></tr>
+        <tr><td>FIPS 140 level</td><td>Level 1</td><td>Level 2</td><td>Level 3</td></tr>
+        <tr><td>Holds</td><td>Keys, secrets, certificates</td><td>Keys, secrets, certificates</td><td><strong>Keys only</strong></td></tr>
+        <tr><td>Access model</td><td>Azure RBAC or access policy</td><td>Azure RBAC or access policy</td><td>Its own <strong>local RBAC</strong>, managed inside the HSM</td></tr>
+        <tr><td>Recovery</td><td>Soft delete and purge protection</td><td>Soft delete and purge protection</td><td>Security domain — download and guard the key material or the HSM is unrecoverable</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>The two safety nets</h3>
+  <ul>
+    <li>
+      <strong>Soft delete</strong> — always on and cannot be turned off. A deleted vault or object goes into a
+      recoverable state for the retention period (<strong>7 to 90 days, default 90</strong>), during which it can be
+      recovered or explicitly purged.
+    </li>
+    <li>
+      <strong>Purge protection</strong> — optional, and <strong>irreversible once enabled</strong>. It blocks the purge
+      operation entirely, so nothing can be permanently destroyed before the retention period elapses. Several services
+      that use customer-managed keys (Azure Storage, Azure SQL TDE, disk encryption sets) require it.
+    </li>
+  </ul>
+
+  <h3>Getting to the secret</h3>
+  <Mermaid code={kvFlow} caption="Two independent gates: the network gets its answer first, and the permission model is only consulted for requests that arrive." />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Built-in role</th><th>Grants</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Key Vault Administrator</td><td>Full data-plane access to keys, secrets and certificates. Not vault management.</td></tr>
+        <tr><td>Key Vault Secrets Officer</td><td>Full management of secrets, including set and delete.</td></tr>
+        <tr><td>Key Vault Secrets User</td><td><strong>Read secret contents.</strong> The role an application's managed identity should have.</td></tr>
+        <tr><td>Key Vault Crypto Officer</td><td>Full management of keys.</td></tr>
+        <tr><td>Key Vault Crypto User</td><td>Perform cryptographic operations with keys — wrap, unwrap, sign, verify.</td></tr>
+        <tr><td>Key Vault Certificates Officer</td><td>Full management of certificates.</td></tr>
+        <tr><td>Key Vault Reader</td><td>Read vault and object <em>metadata</em>, but never secret values.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="Access policies versus Azure RBAC">
+    <p>
+      The legacy <strong>vault access policy</strong> model grants permissions per principal, per object type, on a
+      single vault — and it is all-or-nothing within an object type: you cannot grant access to one secret and not
+      another. <strong>Azure RBAC</strong> is the recommended model: it inherits from management group down, supports
+      assignment at the level of an <em>individual secret</em>, works with PIM, and shows up in a single place with
+      every other role assignment. When a question asks for least privilege on one specific secret, or for consistent
+      management across hundreds of vaults, the answer is RBAC.
+    </p>
+  </Callout>
+
+  <h3>Network controls</h3>
+  <ul>
+    <li><strong>Firewall</strong> — allow all networks, allow selected networks (IP ranges plus virtual network subnets via service endpoints), or disable public access entirely.</li>
+    <li><strong>Trusted Microsoft services</strong> — a bypass checkbox that lets platform services such as Azure Disk Encryption, Azure Backup and App Service reach the vault when the firewall would otherwise refuse. <em>The caller still needs permissions.</em></li>
+    <li><strong>Private endpoint</strong> — a private IP inside your virtual network. The pairing the exam wants is <em>private endpoint plus public network access disabled</em>; a private endpoint alone leaves the public path open.</li>
+  </ul>
+
+  <h3>Detection: two different features, easily confused</h3>
+  <div class="table-wrap">
+    <table class="tbl t-crimson">
+      <thead>
+        <tr><th></th><th>Microsoft Defender for Key Vault</th><th>Secret scanning in Defender CSPM</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Question it answers</td><td>Is somebody <em>abusing</em> this vault right now?</td><td>Are there plaintext credentials lying around my estate?</td></tr>
+        <tr><td>Type</td><td>A workload protection plan — runtime threat detection</td><td>An agentless posture capability</td></tr>
+        <tr><td>Finds</td><td>Unusual access patterns, access from suspicious IPs or Tor exit nodes, unusual volumes of secret retrieval, denied access spikes</td><td>Secrets on VM disks, in container images, in source repositories and in IaC files — then maps where each one can be used</td></tr>
+        <tr><td>Surfaced as</td><td>Security alerts</td><td>Recommendations and attack paths</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="azure-policy">1.7 Governance with Azure Policy</h2>
+  <p>
+    Three objects: a <strong>definition</strong> is a rule; an <strong>initiative</strong> (policy set) bundles
+    definitions so they can be assigned and reported on together; an <strong>assignment</strong> applies either to a
+    scope. Compliance is evaluated on change and on a roughly 24-hour cycle, and can be triggered on demand.
+  </p>
+
+  <Mermaid code={policyOrder} caption="Effect evaluation order. Everything up to Deny happens before the resource exists; the two IfNotExists effects run afterwards, which is why they can deploy or audit related resources." />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Effect</th><th>Use it to…</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>Deny</code></td><td>Stop non-compliant resources being created or updated at all.</td></tr>
+        <tr><td><code>Audit</code></td><td>Flag non-compliance without blocking anything. The safe first step.</td></tr>
+        <tr><td><code>Append</code></td><td>Add a field or a tag to the request as it is submitted.</td></tr>
+        <tr><td><code>Modify</code></td><td>Add, replace or remove properties and tags, including on <em>existing</em> resources through a remediation task.</td></tr>
+        <tr><td><code>DeployIfNotExists</code> (DINE)</td><td>Deploy a related resource when it is missing — a diagnostic setting, an agent extension, a backup configuration.</td></tr>
+        <tr><td><code>AuditIfNotExists</code> (AINE)</td><td>Audit when a related resource is missing, without deploying it.</td></tr>
+        <tr><td><code>DenyAction</code></td><td>Block a specific <em>action</em> rather than a property — in practice, block delete.</td></tr>
+        <tr><td><code>Disabled</code></td><td>Turn the rule off without removing the assignment. Useful while testing.</td></tr>
+        <tr><td><code>Manual</code></td><td>Track an attestation that cannot be measured technically, for compliance reporting.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <CodeBlock
+    lang="json"
+    label="policy rule"
+    code={denyIfPublic}
+  />
+
+  <Callout type="exam" title="Remediation needs an identity">
+    <p>
+      <code>DeployIfNotExists</code> and <code>Modify</code> assignments deploy things, so the assignment needs a{' '}
+      <strong>managed identity</strong> and that identity needs the roles to do the work — which means whoever creates
+      the assignment must themselves hold those roles, or the assignment fails. Existing resources are only brought
+      into line when you run a <strong>remediation task</strong>; creating the assignment fixes nothing retroactively
+      on its own.
+    </p>
+  </Callout>
+
+  <Callout type="warn" title="Exemption is not exclusion">
+    <p>
+      An <strong>exclusion</strong> (<code>notScopes</code>) removes a scope from the assignment entirely — the policy
+      simply never evaluates there. An <strong>exemption</strong> keeps the scope in the assignment but suppresses the
+      compliance result, with a category of <strong>Waiver</strong> (accepting the non-compliance) or{' '}
+      <strong>Mitigated</strong> (handled by another control), an optional expiry and a recorded justification.
+      When the scenario says "temporarily, and we must be able to show why", it is an exemption.
+    </p>
+  </Callout>
+
+  <h2 id="rbac-and-custom-roles">1.8 RBAC, custom roles and over-privileged access</h2>
+  <p>
+    A role assignment is three things: a <strong>security principal</strong> (user, group, service principal, managed
+    identity), a <strong>role definition</strong>, and a <strong>scope</strong>. Assignments are additive and inherit
+    downwards.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th>Role</th><th>Can manage resources</th><th>Can assign roles</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Owner</td><td>Yes, everything</td><td>Yes</td></tr>
+        <tr><td>Contributor</td><td>Yes, everything</td><td><strong>No</strong></td></tr>
+        <tr><td>Reader</td><td>View only</td><td>No</td></tr>
+        <tr><td>User Access Administrator</td><td>No</td><td>Yes</td></tr>
+        <tr><td>Role Based Access Control Administrator</td><td>No</td><td>Yes, but cannot grant Owner or User Access Administrator</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    When no built-in role fits, write a custom one. The definition is JSON with{' '}
+    <code>Actions</code>/<code>NotActions</code> for the control plane and{' '}
+    <code>DataActions</code>/<code>NotDataActions</code> for the data plane; <code>AssignableScopes</code> lists where
+    it may be used.
+  </p>
+  <CodeBlock lang="json" label="custom role" code={customRole} />
+
+  <Callout type="tip" title="Three custom-role facts that get tested">
+    <p>
+      <strong>One:</strong> <code>NotActions</code> is not a deny — it subtracts from the wildcard in{' '}
+      <code>Actions</code>, and a second assignment can grant the permission straight back.
+      <strong>Two:</strong> <code>AssignableScopes</code> controls <em>where the role can be assigned</em>, not what it
+      can reach; a management group there makes the role reusable across every subscription beneath it.
+      <strong>Three:</strong> a tenant supports up to <strong>5,000 custom roles</strong>, and the fastest way to write
+      one is to clone the nearest built-in from the portal.
+    </p>
+  </Callout>
+
+  <h3>Finding and fixing over-privileged assignments</h3>
+  <ul>
+    <li><strong>Defender for Cloud identity and access recommendations</strong> — "there should be more than one owner", "accounts with owner permissions should be MFA enabled", "external accounts with owner permissions should be removed", "deprecated accounts should be removed".</li>
+    <li><strong>Access reviews for Azure resource roles</strong> in PIM — recurring attestation of who still needs what.</li>
+    <li><strong>Defender CSPM attack path analysis</strong> — surfaces the toxic combination of an over-permissioned identity that can reach an internet-exposed, sensitive-data resource.</li>
+    <li><strong>The role assignment view itself</strong> — filter for Owner and Contributor at subscription scope and for assignments inherited from a management group, which are the two that surprise people.</li>
+  </ul>
+
+  <h2 id="resource-locks">1.9 Resource locks</h2>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Lock</th><th>Blocks</th><th>Allows</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>CanNotDelete</code> (portal: <em>Delete</em>)</td><td>Deleting the resource</td><td>Reading and modifying it</td></tr>
+        <tr><td><code>ReadOnly</code></td><td>Any write <em>or</em> delete</td><td>Reading only</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul>
+    <li>Apply at subscription, resource group or resource — <strong>not at a management group</strong>.</li>
+    <li>Locks inherit downwards, and the <strong>most restrictive</strong> lock in the chain wins.</li>
+    <li>Managing locks needs <code>Microsoft.Authorization/locks/*</code> — in practice <strong>Owner</strong> or <strong>User Access Administrator</strong>.</li>
+    <li>They apply to the <strong>control plane only</strong>. Data inside a locked resource can still be deleted.</li>
+  </ul>
+
+  <h2 id="azure-backup-security">1.10 Azure Backup security</h2>
+  <p>
+    Backups are the last line against ransomware, which makes them a target. Four controls, in the order the exam
+    layers them:
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-green">
+      <thead>
+        <tr><th>Control</th><th>What it stops</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Soft delete</strong></td><td>Deleted backup data is retained for a recovery window rather than destroyed. Always on for Recovery Services vaults; the retention period is configurable and it can be made <em>always-on</em> (irreversible).</td></tr>
+        <tr><td><strong>Immutable vault</strong></td><td>Blocks operations that would shorten retention or delete recovery points before they expire. Optionally <strong>locked</strong>, after which the setting itself cannot be reversed.</td></tr>
+        <tr><td><strong>Multi-user authorization (MUA)</strong></td><td>Protected operations require approval from a second identity. Implemented with a <strong>Resource Guard</strong> placed in a different subscription and tenant, owned by a different administrator, so a single compromised admin cannot both disable protection and delete backups.</td></tr>
+        <tr><td><strong>Alerts and monitoring</strong></td><td>Built-in security alerts on critical operations — stop protection with delete data, disable soft delete, change passphrase — sent to subscription owners by default.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="The phrase to listen for">
+    <p>
+      "A rogue administrator must not be able to delete backups on their own" is <strong>multi-user authorization with a
+      Resource Guard</strong>. "Backups must not be deletable before their retention expires" is an{' '}
+      <strong>immutable vault</strong>. "We must be able to recover backups deleted by mistake" is{' '}
+      <strong>soft delete</strong>. Three similar-sounding requirements, three different features.
+    </p>
+  </Callout>
+
+  <h2 id="infrastructure-as-code">1.11 Security controls through infrastructure as code</h2>
+  <p>
+    The exam treats IaC as both a way to <em>apply</em> controls consistently and a surface that itself needs securing.
+  </p>
+  <ul>
+    <li>
+      <strong>Deploy controls as code.</strong> Bicep and ARM templates, Terraform, and Azure Verified Modules express
+      hardened baselines — private endpoints, diagnostic settings, TLS minimums — so a compliant resource is the default
+      rather than a remediation task. <strong>Deployment stacks</strong> add <em>deny settings</em>, which behave like a
+      managed deny assignment over everything the stack manages.
+    </li>
+    <li>
+      <strong>Scan the code before it ships.</strong> Defender for Cloud's DevOps security connects to Azure DevOps,
+      GitHub and GitLab and surfaces IaC misconfigurations, exposed secrets, code and dependency findings as
+      recommendations in the same secure score as the running estate. The{' '}
+      <strong>Microsoft Security DevOps</strong> extension runs the analysers inside the pipeline itself.
+    </li>
+    <li>
+      <strong>Authenticate the pipeline without secrets.</strong> Use workload identity federation for the deployment
+      service connection, and never a long-lived client secret.
+    </li>
+    <li>
+      <strong>Pair it with Azure Policy.</strong> IaC covers what your pipelines create; Policy covers everything else,
+      including what somebody creates by hand in the portal at two in the morning.
+    </li>
+  </ul>
+
+  <h2 id="skill-1-checklist">Skill 1 checklist</h2>
+  <div class="card">
+    <ul>
+      <li>Eligible beats active; approval and a short activation window beat a long one; PIM for Groups is how you make anything group-based eligible.</li>
+      <li>Report-only first, What If for one user, break-glass accounts excluded from everything.</li>
+      <li>Phishing-resistant MFA means passkeys, Windows Hello for Business or certificate-based authentication — not Authenticator push.</li>
+      <li>Application permissions have no user to intersect with; they always need admin consent.</li>
+      <li>Managed identity inside Azure; workload identity federation outside it.</li>
+      <li>Key Vault: soft delete is mandatory, purge protection is optional and irreversible, RBAC beats access policies, private endpoint <em>plus</em> disabling public access.</li>
+      <li>Policy governs shape, RBAC governs who, locks govern deletion — and a lock never protects data.</li>
+      <li>MUA with a Resource Guard is the answer to the rogue-administrator backup question.</li>
+    </ul>
+  </div>
+  <p>
+    Next: <a href={href('skill-2-storage-databases-networking')}>Skill 2</a>, the heaviest domain on the exam.
+  </p>
+</NoteLayout>

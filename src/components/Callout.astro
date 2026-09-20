@@ -1,0 +1,24 @@
+---
+/**
+ * Boxed aside. The variant picks the colour and the leading emoji, which are
+ * both declared in the "Callouts" block of global.css.
+ *
+ *   exam       an exam-specific caveat or trap
+ *   tip        a study or design recommendation
+ *   warn       something that will bite you
+ *   note       neutral background detail
+ *   code-note  a coding or SDK detail
+ *   rename     a renamed / rebranded term to keep straight
+ */
+interface Props {
+  type?: 'exam' | 'tip' | 'warn' | 'note' | 'code-note' | 'rename';
+  title?: string;
+}
+
+const { type = 'note', title } = Astro.props;
+---
+
+<div class={`callout ${type}`}>
+  {title && <p class="ct-title">{title}</p>}
+  <slot />
+</div>

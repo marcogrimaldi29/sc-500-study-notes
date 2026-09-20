@@ -1,0 +1,35 @@
+---
+import { neighbours } from '../data/site';
+import { href } from '../lib/urls';
+
+interface Props {
+  current: string;
+}
+
+const { current } = Astro.props;
+const { prev, next } = neighbours(current);
+---
+
+<nav class="pager" aria-label="Page navigation">
+  {
+    prev ? (
+      <a class="prev" href={href(prev.slug)} rel="prev">
+        <div class="pg-dir">← Previous</div>
+        <div class="pg-title">{prev.label}</div>
+      </a>
+    ) : (
+      <a class="prev" href={href('')} rel="prev">
+        <div class="pg-dir">← Previous</div>
+        <div class="pg-title">Home</div>
+      </a>
+    )
+  }
+  {
+    next && (
+      <a class="next" href={href(next.slug)} rel="next">
+        <div class="pg-dir">Next →</div>
+        <div class="pg-title">{next.label}</div>
+      </a>
+    )
+  }
+</nav>

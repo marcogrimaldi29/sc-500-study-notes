@@ -1,0 +1,520 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+// The two NSG stages are collapsed into one node: they are sequential, both
+// must allow, and splitting them added a whole level of height for no extra
+// information.
+const packetPath = `
+flowchart TB
+  P["An inbound packet heads for a VM in a virtual network"] --> SA{"Does a Virtual Network Manager<br/>security admin rule match?"}
+  SA -->|"Deny"| D1["Dropped — NSG rules<br/>are never evaluated"]
+  SA -->|"Always allow"| A1["Delivered straight to the VM —<br/>NSG rules are never evaluated"]
+  SA -->|"Allow, or<br/>nothing matches"| SN{"NSG rules — subnet first,<br/>then network interface<br/>lowest priority number first,<br/>and both must allow"}
+  SN -->|"Either NSG denies, or neither allows it"| D2["Dropped"]
+  SN -->|"Both allow"| OK["Delivered to the virtual machine"]
+`;
+
+const firewallOrder = `
+flowchart TB
+  T["Traffic reaches Azure Firewall"] --> TI{"Threat intelligence mode"}
+  TI -->|"Alert and deny, and the address or domain<br/>is on a Microsoft threat feed"| DROP["Dropped before any rule is read"]
+  TI -->|"Off, Alert only, or no match"| DNAT["1 · DNAT rules — translate inbound connections"]
+  DNAT --> NET["2 · Network rules — layer 3 and 4, any protocol"]
+  NET --> APP["3 · Application rules — FQDN, URL and web categories"]
+  APP --> PREM["Premium only — IDPS and TLS inspection applied to the permitted flow"]
+`;
+
+const privatePath = `
+flowchart TB
+  Q["You need a PaaS resource reached privately"] --> A{"Does it need a private IP inside your own address space?"}
+  A -->|"Yes — on-premises, peered and cross-region<br/>networks must reach it too"| PE["Private endpoint — a network interface with a private IP in your subnet"]
+  A -->|"No — you only need to stop everyone<br/>except a named subnet reaching it"| SE["Service endpoint — the subnet's identity is presented to the service,<br/>which keeps its public IP and firewall"]
+  PE --> DNS["Add a private DNS zone, or clients still resolve and use the public address"]
+  DNS --> OFF["Set public network access to Disabled, or the public path stays open beside it"]
+  SE --> POL["Service endpoint policies can narrow the subnet to specific storage accounts"]
+`;
+
+const sasCli = `# A user delegation SAS: signed with Microsoft Entra credentials, not the
+# account key, so it can be revoked without rotating anything.
+az storage blob generate-sas \\
+  --account-name contosodata \\
+  --container-name reports --name q3.pdf \\
+  --permissions r \\
+  --expiry 2026-09-20T18:00Z \\
+  --auth-mode login --as-user \\
+  --https-only --full-uri
+
+# Turn shared key authorisation off entirely so account keys — and every
+# service and account SAS derived from them — stop working.
+az storage account update \\
+  --name contosodata --resource-group rg-data \\
+  --allow-shared-key-access false`;
+---
+
+<NoteLayout
+  slug="skill-2-storage-databases-networking"
+  description="SC-500 Skill 2: storage account hardening, SAS and access policies, Defender for Storage, Azure SQL platform security and auditing, Defender for Databases, NSGs and ASGs, Azure Virtual Network Manager, Virtual WAN, VPN, Entra Private Access, Private Link and Azure Firewall."
+  intro="The heaviest domain on the exam at 25–30%, and the broadest. It is really three syllabuses stapled together — storage, databases and networking — so treat it as three study sessions rather than one."
+  themeColor="#2f57c4"
+>
+  <p class="lead">
+    Two ideas run through everything here. <strong>Close the public path</strong> — private endpoints, disabled public
+    network access, firewalls that default to deny. And <strong>stop using shared secrets</strong> — Microsoft Entra
+    authorisation instead of account keys, managed identities instead of connection strings, user delegation SAS instead
+    of account SAS. When two answers both technically work, the one that does one of those two things is the keyed one.
+  </p>
+
+  <h2 id="storage-account-security">2.1 Securing storage accounts</h2>
+
+  <h3>Encryption, which is mostly already done for you</h3>
+  <ul>
+    <li><strong>Storage Service Encryption</strong> is always on, 256-bit AES, and cannot be disabled.</li>
+    <li>
+      <strong>Customer-managed keys (CMK)</strong> in Key Vault or Managed HSM replace the Microsoft-managed key for
+      blobs and files. They require the vault to have <strong>soft delete and purge protection</strong> enabled, and the
+      storage account to have an identity with key permissions.
+    </li>
+    <li>
+      <strong>Infrastructure encryption</strong> adds a second, independent 256-bit AES layer beneath the first — "double
+      encryption". It can only be chosen <strong>when the account is created</strong>, never afterwards.
+    </li>
+    <li><strong>Encryption scopes</strong> apply a different key to an individual container or blob within the same account.</li>
+  </ul>
+
+  <h3>Authorising access — the part that is actually tested</h3>
+  <div class="table-wrap">
+    <table class="tbl t-royal">
+      <thead>
+        <tr><th>Method</th><th>How it works</th><th>Revoked by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Microsoft Entra ID</strong> <span class="pill p-green">preferred</span></td>
+          <td>Azure RBAC data roles — Storage Blob Data Reader / Contributor / Owner, Storage Queue Data Reader, and so on. Works with managed identities, PIM and Conditional Access.</td>
+          <td>Removing the role assignment</td>
+        </tr>
+        <tr>
+          <td><strong>Shared key</strong></td>
+          <td>One of the two 512-bit account keys. Full control of the entire account, with no identity attached and nothing useful in the logs.</td>
+          <td>Rotating the key — which breaks every other consumer of it</td>
+        </tr>
+        <tr>
+          <td><strong>User delegation SAS</strong></td>
+          <td>A SAS signed with a <em>Microsoft Entra</em> user delegation key rather than the account key. Blob service only. Maximum lifetime <strong>7 days</strong>.</td>
+          <td>Revoking the user delegation key — immediate, and does not touch account keys</td>
+        </tr>
+        <tr>
+          <td><strong>Service SAS</strong></td>
+          <td>Signed with an account key, scoped to one service. Can be bound to a <strong>stored access policy</strong> on the container.</td>
+          <td>Deleting or editing the stored access policy, or rotating the key</td>
+        </tr>
+        <tr>
+          <td><strong>Account SAS</strong></td>
+          <td>Signed with an account key, can span services and includes service-level operations. The broadest and riskiest.</td>
+          <td>Rotating the account key. Nothing else.</td>
+        </tr>
+        <tr>
+          <td><strong>Anonymous public read</strong></td>
+          <td>Container or blob level, if <code>allowBlobPublicAccess</code> is true.</td>
+          <td>Setting <code>allowBlobPublicAccess</code> to false at the account level — which overrides every container setting at once</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <CodeBlock lang="bash" label="azure cli" code={sasCli} />
+
+  <Callout type="exam" title="The three SAS questions that keep coming back">
+    <p>
+      <strong>"A SAS was leaked and must be invalidated immediately, without disrupting other applications."</strong> If
+      it is a service SAS tied to a stored access policy, delete the policy. If it is a user delegation SAS, revoke the
+      user delegation key. If it is an account SAS, your only option is to rotate the account key — which is exactly why
+      the exam wants you to avoid account SAS in the first place.
+      <br /><br />
+      <strong>"Make the SAS auditable."</strong> User delegation SAS, because the signing identity is recorded.
+      <br /><br />
+      <strong>"Stop anyone using account keys at all."</strong> Set <code>allowSharedKeyAccess</code> to false. That
+      single switch also kills every service and account SAS, because both are signed with the account key.
+    </p>
+  </Callout>
+
+  <h3>Network controls</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Control</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Public network access</td><td>Enabled from all networks / <strong>Enabled from selected virtual networks and IP addresses</strong> / Disabled. Selecting "selected networks" flips the default to deny.</td></tr>
+        <tr><td>Firewall rules</td><td>Public IPv4 addresses and CIDR ranges. <strong>Private ranges such as 10.0.0.0/8 are rejected</strong> — use a service endpoint or private endpoint instead.</td></tr>
+        <tr><td>Virtual network rules</td><td>Subnets with the <code>Microsoft.Storage</code> service endpoint enabled.</td></tr>
+        <tr><td>Resource instances</td><td>Allow one named Azure resource — a specific Synapse workspace or Data Factory — through the firewall by its managed identity, rather than opening a whole service tag.</td></tr>
+        <tr><td>Exceptions</td><td>"Allow Azure services on the trusted services list", and "allow read access to storage logging and metrics". Both are checkboxes that quietly widen access.</td></tr>
+        <tr><td>Private endpoints</td><td>One per <strong>sub-resource</strong> — blob, file, queue, table, web, dfs. A private endpoint for <code>blob</code> does nothing for file shares.</td></tr>
+        <tr><td>Secure transfer required</td><td>HTTPS only. On by default for new accounts.</td></tr>
+        <tr><td>Minimum TLS version</td><td>Set to 1.2 at least.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Data protection and immutability</h3>
+  <ul>
+    <li><strong>Soft delete</strong> for blobs, containers and file shares — a recovery window before data is really gone.</li>
+    <li><strong>Versioning</strong> and <strong>point-in-time restore</strong> for block blobs.</li>
+    <li>
+      <strong>Immutability policies (WORM)</strong> — <em>time-based retention</em> holds data for a fixed period;
+      a <em>legal hold</em> holds it indefinitely until the tag is cleared. Set at container scope or version scope.
+      A time-based policy can be <strong>locked</strong>, after which retention can only be extended, never shortened.
+    </li>
+  </ul>
+
+  <h3>Microsoft Defender for Storage</h3>
+  <div class="table-wrap">
+    <table class="tbl t-crimson">
+      <thead>
+        <tr><th>Capability</th><th>What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Activity monitoring</strong></td><td>Behavioural detection over control and data telemetry — unusual access, suspicious IPs and Tor exit nodes, data exfiltration patterns, and access from misconfigured or leaked SAS tokens.</td></tr>
+        <tr><td><strong>Sensitive data threat detection</strong></td><td>Uses sensitive data discovery to raise the severity of alerts on containers that actually hold sensitive information.</td></tr>
+        <tr><td><strong>Malware scanning</strong></td><td>Near real-time on-upload scanning of blobs with Microsoft Defender Antivirus, plus on-demand scans. Billed per GB with a default cap of <strong>10,000 GB per storage account per month</strong>; when the cap is hit, scanning stops.</td></tr>
+        <tr><td><strong>Hash reputation analysis</strong></td><td>Compares hashes against Microsoft Defender Threat Intelligence. Available in every plan, but it does not cover SMB file shares or blobs written with Put Block / Put Block List.</td></tr>
+        <tr><td><strong>Event-driven response</strong></td><td>Scan results publish to <strong>Azure Event Grid</strong>, so a Function or Logic App can delete, quarantine or tag a malicious blob automatically.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Enable it agentlessly at the <strong>subscription</strong> level (all current and future accounts, with exclusions)
+    or per storage account. No diagnostic logs need to be turned on.
+  </p>
+
+  <h2 id="securing-databases">2.2 Securing databases</h2>
+
+  <h3>Authentication</h3>
+  <ul>
+    <li>Set a <strong>Microsoft Entra admin</strong> on the logical server, then create contained database users mapped to Entra principals — including managed identities.</li>
+    <li>
+      Turn on <strong>Microsoft Entra-only authentication</strong> to disable SQL authentication entirely. This is the
+      keyed answer to "prevent the use of SQL logins, including the server admin account".
+    </li>
+    <li>Applications should connect with a <strong>managed identity</strong>, never a connection string containing a password.</li>
+  </ul>
+
+  <h3>Network</h3>
+  <div class="table-wrap">
+    <table class="tbl t-royal">
+      <thead>
+        <tr><th>Control</th><th>Scope</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Server-level firewall rules</td><td>Every database on the logical server</td><td>Stored in the <code>master</code> database.</td></tr>
+        <tr><td>Database-level firewall rules</td><td>One database</td><td>Created with T-SQL only, and evaluated <strong>before</strong> server rules — the more portable and more granular option.</td></tr>
+        <tr><td>"Allow Azure services and resources to access this server"</td><td>Server</td><td>Rule <code>0.0.0.0</code>. It means <em>any</em> Azure subscription, including someone else's. Turn it off.</td></tr>
+        <tr><td>Private endpoint</td><td>Server</td><td>Combine with public network access disabled.</td></tr>
+        <tr><td>Connection policy</td><td>Server</td><td><em>Redirect</em> is lowest latency but needs ports 11000–11999 open; <em>Proxy</em> uses 1433 only and is the safe answer when a restrictive firewall sits in the path.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Protecting the data itself</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Feature</th><th>Protects against</th><th>Key detail</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Transparent Data Encryption (TDE)</strong></td><td>Someone stealing the files or backups</td><td>On by default. Service-managed key, or a customer-managed key in Key Vault (BYOK). Data is encrypted at rest only — anyone who can query sees plaintext.</td></tr>
+        <tr><td><strong>Always Encrypted</strong></td><td>The database administrator, and anyone with a privileged server role</td><td>Encryption and decryption happen in the <em>client driver</em>; the engine never sees the keys. With <strong>secure enclaves</strong>, rich computations and in-place encryption become possible.</td></tr>
+        <tr><td><strong>Dynamic data masking</strong></td><td>Casual over-exposure in query results</td><td>Presentation-layer only — the data is not encrypted and a determined user can infer it. Not a security boundary.</td></tr>
+        <tr><td><strong>Row-level security</strong></td><td>Users seeing rows that are not theirs</td><td>A predicate function plus a security policy, enforced by the engine on every query.</td></tr>
+        <tr><td><strong>Ledger</strong></td><td>Undetected tampering</td><td>Cryptographically verifiable history, with digests that can be published to immutable storage.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="TDE or Always Encrypted?">
+    <p>
+      If the threat is <strong>physical media, backups or a stolen file</strong>, it is TDE. If the threat is a{' '}
+      <strong>highly privileged user inside the database</strong> — a DBA who must administer but must not read salaries
+      — it is Always Encrypted. If the requirement is merely that call-centre staff see only the last four digits, it is
+      dynamic data masking.
+    </p>
+  </Callout>
+
+  <h3>Auditing</h3>
+  <ul>
+    <li>Configure at <strong>server level</strong> (applies to every database, current and future — the usual answer) or at <strong>database level</strong>. Enabling both produces duplicate logs.</li>
+    <li>Three destinations: <strong>Log Analytics workspace</strong> (the one that feeds Microsoft Sentinel), <strong>Event Hubs</strong>, and a <strong>storage account</strong>.</li>
+    <li><strong>Microsoft support operations auditing</strong> separately records what Microsoft support engineers do in your database during a support request.</li>
+    <li>For <strong>SQL Managed Instance</strong>, auditing can also be configured with T-SQL server audit specifications.</li>
+  </ul>
+
+  <h3>Microsoft Defender for Databases</h3>
+  <p>An umbrella plan covering four database families, each enabled separately:</p>
+  <ul>
+    <li><strong>Azure SQL Database</strong> servers</li>
+    <li><strong>SQL servers on machines</strong> — SQL Server on Azure VMs and on Arc-enabled servers</li>
+    <li><strong>Open-source relational databases</strong> — Azure Database for MySQL, PostgreSQL and MariaDB</li>
+    <li><strong>Azure Cosmos DB</strong></li>
+  </ul>
+  <p>It brings two things: <strong>Advanced Threat Protection</strong> alerts (SQL injection, brute-force attempts, access from an unusual location or principal, suspicious data exfiltration) and, for SQL, <strong>vulnerability assessment</strong>. The <em>express</em> vulnerability assessment configuration needs no storage account and is the modern default; the <em>classic</em> configuration writes scan results to a storage account you provide.</p>
+
+  <h2 id="network-security-groups">2.3 Network security groups and application security groups</h2>
+  <p>
+    An NSG is a stateful five-tuple filter — source, source port, destination, destination port, protocol — with a
+    priority from <strong>100 to 4096</strong>, evaluated lowest number first. The first match wins and evaluation stops.
+    NSGs associate to <strong>subnets</strong> and to <strong>network interfaces</strong>.
+  </p>
+
+  <h3>Default rules, which cannot be deleted</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Priority</th><th>Rule</th><th>Effect</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>65000</td><td>AllowVNetInBound / AllowVNetOutBound</td><td>Anything inside the virtual network, and peered networks, can talk</td></tr>
+        <tr><td>65001</td><td>AllowAzureLoadBalancerInBound</td><td>Health probes reach your VMs</td></tr>
+        <tr><td>65001</td><td>AllowInternetOutBound</td><td>Outbound to the internet is permitted</td></tr>
+        <tr><td>65500</td><td>DenyAllInBound / DenyAllOutBound</td><td>Everything else is dropped</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <strong>Service tags</strong> (<code>Internet</code>, <code>AzureCloud</code>, <code>Storage</code>,{' '}
+    <code>Sql</code>, <code>AzureActiveDirectory</code>, <code>VirtualNetwork</code>,{' '}
+    <code>AzureLoadBalancer</code>) stand in for address ranges Microsoft keeps updated, and many accept a regional
+    suffix such as <code>Storage.WestEurope</code>. <strong>Application security groups (ASGs)</strong> let a rule say
+    "from <em>asg-web</em> to <em>asg-db</em> on 1433" instead of listing IP addresses — the NICs carry the membership,
+    so rules survive scaling. Both NICs in a rule must be in the same virtual network.
+  </p>
+
+  <Mermaid code={packetPath} caption="Inbound evaluation order. A security admin rule set to Deny or Always allow ends the story; only Allow hands the packet on to the NSGs, and both NSGs must permit it." />
+
+  <Callout type="warn" title="Inbound and outbound are evaluated in opposite orders">
+    <p>
+      For <strong>inbound</strong> traffic, the <em>subnet</em> NSG is evaluated first, then the <em>NIC</em> NSG. For{' '}
+      <strong>outbound</strong> traffic it is the other way round: NIC first, then subnet. Either way both must allow the
+      traffic, so the effective rule is the more restrictive of the two — which is why "we allowed it on the NIC but it
+      still fails" is usually a subnet NSG.
+    </p>
+  </Callout>
+
+  <h2 id="virtual-network-manager">2.4 Azure Virtual Network Manager</h2>
+  <p>
+    AVNM is the central-governance layer above NSGs. You scope a network manager to a <strong>management group or
+    subscription</strong>, group virtual networks into <strong>network groups</strong> (static membership, or dynamic
+    membership driven by an Azure Policy condition on tags or names), then deploy configurations to regions.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-royal">
+      <thead>
+        <tr><th>Configuration</th><th>Delivers</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Connectivity</strong></td><td>Hub-and-spoke or mesh topology across a network group, using connected groups rather than hand-built peerings.</td></tr>
+        <tr><td><strong>Security admin</strong></td><td>Rule collections of <strong>security admin rules</strong> that override NSGs.</td></tr>
+        <tr><td><strong>Routing</strong></td><td>Centrally managed user-defined routes.</td></tr>
+        <tr><td><strong>IP address management</strong></td><td>Address pools that hand out non-overlapping CIDR blocks automatically.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Security admin rules, in detail</h3>
+  <ul>
+    <li>Applied at the <strong>virtual network</strong> level; NSGs apply at subnet and NIC level.</li>
+    <li>Priority <strong>1 to 4096</strong>, lowest first, and always evaluated <strong>before</strong> NSGs.</li>
+    <li>Three actions: <strong>Allow</strong> (hand on to the NSGs), <strong>Always allow</strong> (deliver, skip the NSGs) and <strong>Deny</strong> (drop, skip the NSGs).</li>
+    <li>Only <strong>one security admin configuration</strong> can be deployed per region per network manager — use multiple rule collections inside it rather than multiple configurations.</li>
+    <li>They use an <strong>eventual consistency</strong> model, so newly created resources pick them up after a short delay.</li>
+    <li>
+      Several subnets are <strong>exempt</strong>: Application Gateway, Azure Bastion, Azure Firewall, Route Server, VPN
+      Gateway, Virtual WAN and ExpressRoute gateway subnets. They also do not apply to private endpoints in managed
+      virtual networks.
+    </li>
+  </ul>
+
+  <Callout type="exam" title="The canonical scenario">
+    <p>
+      "Block inbound SSH across every virtual network in the company, but let the platform team's two virtual networks
+      keep it." That is one <strong>Deny</strong> security admin rule at a low priority number over a network group
+      containing everything, plus an <strong>Allow</strong> rule at a lower number still over the exception network
+      group — deliberately <em>Allow</em>, not <em>Always allow</em>, so the application teams' own NSGs still get to
+      narrow it further. Doing this with NSGs alone would require touching every NSG and would leave each team free to
+      undo it.
+    </p>
+  </Callout>
+
+  <h2 id="azure-firewall">2.5 Azure Firewall</h2>
+  <div class="table-wrap">
+    <table class="tbl t-royal">
+      <thead>
+        <tr><th></th><th>Basic</th><th>Standard</th><th>Premium</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Intended for</td><td>Small business, under 250 Mbps</td><td>The general case</td><td>Highly sensitive and regulated environments</td></tr>
+        <tr><td>Network and application rules</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Threat intelligence</td><td>Alert only</td><td>Alert, or alert and deny</td><td>Alert, or alert and deny</td></tr>
+        <tr><td>TLS inspection</td><td>❌</td><td>❌</td><td>✅</td></tr>
+        <tr><td>IDPS (signature-based detection and prevention)</td><td>❌</td><td>❌</td><td>✅</td></tr>
+        <tr><td>URL filtering (full path, not just FQDN)</td><td>❌</td><td>❌</td><td>✅</td></tr>
+        <tr><td>Web categories</td><td>❌</td><td>Coarse, FQDN-based</td><td>Full category matching on the URL</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Mermaid code={firewallOrder} caption="Rule processing is fixed: DNAT, then network, then application rules. Within a firewall policy, rule collection groups are ordered by priority and rule collections within them by priority." />
+
+  <Callout type="tip" title="Firewall Policy replaces classic rules">
+    <p>
+      Classic rule collections live on the firewall resource itself. A <strong>firewall policy</strong> is a separate,
+      reusable resource that can be <strong>inherited by child policies</strong>, which is how you keep an
+      organisation-wide baseline while letting regions add their own rules. Premium features — IDPS, TLS inspection, URL
+      filtering — are configured <em>only</em> in a policy, and a Premium policy cannot be attached to a Standard
+      firewall. <strong>Azure Firewall Manager</strong> is where policies and secured hubs are administered centrally.
+    </p>
+  </Callout>
+
+  <p>
+    Two more behaviours worth knowing: <strong>DNS proxy</strong> makes the firewall the DNS server for the virtual
+    network, which is what lets FQDN-based network rules resolve consistently; and <strong>forced tunnelling</strong>{' '}
+    sends the firewall's own outbound traffic to an on-premises next hop, which requires a dedicated{' '}
+    <code>AzureFirewallManagementSubnet</code>.
+  </p>
+
+  <h2 id="virtual-wan-and-vpn">2.6 Virtual WAN and VPN</h2>
+  <p>
+    A <strong>Virtual WAN</strong> hub becomes a <strong>secured virtual hub</strong> the moment you deploy Azure
+    Firewall or a supported partner NVA into it. <strong>Routing intent</strong> then declares, in one place, that{' '}
+    <em>internet traffic</em> and/or <em>private traffic</em> must be inspected by that security appliance — replacing
+    the fleet of user-defined routes you would otherwise maintain per spoke.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>VPN type</th><th>Authentication</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Site-to-site</td><td>Pre-shared key, or certificates</td><td>IKEv1/IKEv2 IPsec. Custom IPsec/IKE policies let you pin approved algorithms — the answer to "only AES-256 and SHA-384 may be used".</td></tr>
+        <tr><td>Point-to-site</td><td>Azure certificate, RADIUS, or <strong>Microsoft Entra ID</strong></td><td>Entra authentication requires the <strong>OpenVPN</strong> tunnel type, and is what lets Conditional Access and MFA apply to VPN sign-in.</td></tr>
+        <tr><td>ExpressRoute</td><td>n/a — private circuit</td><td>Add MACsec on the circuit, or IPsec over ExpressRoute, when encryption is mandated.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="entra-private-access">2.7 Microsoft Entra Private Access</h2>
+  <p>
+    Part of <strong>Global Secure Access</strong>, Microsoft's Security Service Edge. Private Access replaces the
+    traditional VPN with per-application access: nothing is published to the internet, the user's client tunnels only
+    the traffic that matches a profile, and Conditional Access is applied per application rather than once at the tunnel.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-royal">
+      <thead>
+        <tr><th>Piece</th><th>Job</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Private network connector</strong></td><td>A lightweight Windows Server agent with line of sight to the resource. Grouped into <strong>connector groups</strong> for resilience and for reaching separate networks.</td></tr>
+        <tr><td><strong>Traffic forwarding profile</strong></td><td>Tells the Global Secure Access client what to tunnel — Private access, Microsoft traffic, or Internet access.</td></tr>
+        <tr><td><strong>Quick Access</strong></td><td>One enterprise application publishing broad IP ranges and wildcard FQDNs — the VPN-replacement first step. Up to 500 application segments.</td></tr>
+        <tr><td><strong>Per-app access</strong></td><td>A separate Global Secure Access enterprise application per resource, so each gets its own assignments and Conditional Access. The Zero Trust destination.</td></tr>
+        <tr><td><strong>Application segment</strong></td><td>An FQDN (wildcards allowed), IP address, CIDR range or IP-to-IP range, with ports and protocols.</td></tr>
+        <tr><td><strong>Private DNS</strong></td><td>DNS suffixes tunnelled for private name resolution, so internal hostnames resolve without split-DNS hacks.</td></tr>
+        <tr><td><strong>Application Discovery</strong></td><td>Analyses what users actually reach through Quick Access so you can carve it into per-app applications with evidence.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Administering it needs the <strong>Global Secure Access Administrator</strong> role, plus{' '}
+    <strong>Application Administrator</strong> to manage connector groups and enterprise applications.
+  </p>
+
+  <Callout type="tip" title="Why the exam likes this over a VPN">
+    <p>
+      A VPN authenticates once and then the user is <em>on the network</em>. Private Access authenticates per
+      application, so you can require phishing-resistant MFA for the finance system and a compliant device for the HR
+      system, without building two VPNs. Whenever a scenario says "grant contractors access to one internal application
+      without giving them network access", that is Entra Private Access with per-app access.
+    </p>
+  </Callout>
+
+  <h2 id="private-link">2.8 Private endpoints, Private Link service and service endpoints</h2>
+  <Mermaid code={privatePath} caption="Private endpoint or service endpoint. The DNS step is the one people forget — without the private DNS zone the hostname still resolves to the public IP and the private endpoint is bypassed." />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th></th><th>Service endpoint</th><th>Private endpoint</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>What it is</td><td>A route and an identity: the subnet's identity is presented to the PaaS service</td><td>A NIC with a private IP from your subnet, mapped to one sub-resource</td></tr>
+        <tr><td>Traffic path</td><td>Stays on the Azure backbone, but the destination is still a public IP</td><td>Entirely private</td></tr>
+        <tr><td>Reachable from on-premises</td><td>❌</td><td>✅ over VPN or ExpressRoute</td></tr>
+        <tr><td>Reachable from peered networks</td><td>❌</td><td>✅</td></tr>
+        <tr><td>Granularity</td><td>The whole service in a region (narrowed by service endpoint policies for storage)</td><td>One specific resource, one sub-resource</td></tr>
+        <tr><td>DNS change needed</td><td>No</td><td><strong>Yes</strong> — a private DNS zone such as <code>privatelink.blob.core.windows.net</code></td></tr>
+        <tr><td>Cost</td><td>Free</td><td>Charged per endpoint and per GB</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <strong>Azure Private Link service</strong> is the other side of the same coin: it is what <em>you</em> create to
+    publish your own service — behind a <strong>Standard internal load balancer</strong> — so that consumers in other
+    virtual networks and other tenants can reach it through their own private endpoints, with no peering and no
+    overlapping-address problems. Approval of each connection is explicit, automatic or rejected, per your
+    configuration.
+  </p>
+
+  <h2 id="network-watcher">2.9 Diagnosing it with Network Watcher</h2>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Tool</th><th>Answers</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Effective security rules</strong></td><td>"What rules actually apply to this NIC?" — the flattened result of subnet and NIC NSGs together. The first stop for any "why is this blocked?" question.</td></tr>
+        <tr><td><strong>NSG diagnostics</strong></td><td>"Would this specific flow be allowed?" — simulates a packet and names the rule that decides it.</td></tr>
+        <tr><td><strong>IP flow verify</strong></td><td>The same idea for a single five-tuple, returning allow/deny and the deciding rule.</td></tr>
+        <tr><td><strong>Next hop</strong></td><td>"Where does traffic to this address actually go?" — catches a missing or wrong user-defined route.</td></tr>
+        <tr><td><strong>Connection troubleshoot</strong></td><td>End-to-end reachability test including latency and the hop that fails.</td></tr>
+        <tr><td><strong>Packet capture</strong></td><td>On-demand capture to storage or local disk.</td></tr>
+        <tr><td><strong>Flow logs and traffic analytics</strong></td><td>Recorded flow records, visualised.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="NSG flow logs are retiring">
+    <p>
+      <strong>NSG flow logs retire on 30 September 2027</strong>, and new ones could no longer be created from 30 June
+      2025. Use <strong>virtual network flow logs</strong> instead: they cover all traffic in the virtual network
+      including flows no NSG processes, they record the effect of <strong>Virtual Network Manager security admin
+      rules</strong> and virtual network encryption, they are configured once at the virtual network rather than at both
+      subnet and NIC, and they produce no duplicate records. Microsoft provides both a migration script and a built-in
+      Azure Policy to move at scale.
+    </p>
+  </Callout>
+
+  <h2 id="skill-2-checklist">Skill 2 checklist</h2>
+  <div class="card">
+    <ul>
+      <li>Entra authorisation over shared key; user delegation SAS over account SAS; stored access policy is how you revoke a service SAS.</li>
+      <li><code>allowSharedKeyAccess = false</code> kills account keys <em>and</em> every SAS signed with them.</li>
+      <li>Private endpoint is per sub-resource, needs a private DNS zone, and should be paired with public access disabled.</li>
+      <li>TDE for media, Always Encrypted for privileged insiders, masking for presentation only.</li>
+      <li>Server-level SQL auditing to a Log Analytics workspace is the Sentinel-friendly answer; database-level firewall rules are evaluated first.</li>
+      <li>Security admin rules beat NSGs; Deny and Always allow end evaluation, Allow does not.</li>
+      <li>Azure Firewall order is DNAT → network → application, with threat intelligence ahead of all three; IDPS, TLS inspection and URL filtering are Premium only.</li>
+      <li>Per-app access in Entra Private Access, not Quick Access, is the Zero Trust answer.</li>
+      <li>Virtual network flow logs, not NSG flow logs.</li>
+    </ul>
+  </div>
+  <p>
+    Next: <a href={href('skill-3-secure-compute')}>Skill 3</a>, which covers servers, containers, the application
+    platform — and the AI workloads that make this exam what it is.
+  </p>
+</NoteLayout>

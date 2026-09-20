@@ -1,0 +1,406 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const dfcLayers = `
+flowchart TB
+  FREE["Foundational CSPM — free, on for every subscription<br/>secure score · Microsoft cloud security benchmark<br/>recommendations · asset inventory"] --> CSPM
+  CSPM["Defender CSPM plan — attack path analysis<br/>cloud security explorer · agentless scanning<br/>sensitive data discovery · secret scanning · DevOps"] --> CWP
+  CWP["Workload protection plans, one per resource type<br/>runtime threat detection and security alerts"] --> XDR
+  XDR["Alerts surface in Microsoft Defender XDR<br/>and can be ingested by Microsoft Sentinel"]
+`;
+
+const sentinelPipeline = `
+flowchart TB
+  COL{"How does the source reach the workspace?"}
+  COL -->|"An Azure resource"| DIAG["Diagnostic settings<br/>pointed at the workspace"]
+  COL -->|"A Windows or<br/>Linux machine"| AMA["Azure Monitor Agent,<br/>driven by a data<br/>collection rule"]
+  COL -->|"A Syslog or<br/>CEF appliance"| FWD["A Linux forwarder<br/>running the agent,<br/>receiving on port 514"]
+  COL -->|"A SaaS or<br/>API source"| CCP["A content hub connector,<br/>or the Codeless<br/>Connector Platform"]
+  DIAG --> TBL
+  AMA --> TBL
+  FWD --> TBL
+  CCP --> TBL
+  TBL{"A table in the workspace — which tier is it in?"}
+  TBL -->|"Analytics tier"| AN["Analytics rules, hunting, workbooks and playbooks<br/>90 days included, extendable to two years"]
+  TBL -->|"Data lake tier"| DL["Low-cost retention up to twelve years<br/>KQL jobs, Spark jobs, notebooks and summary rules"]
+`;
+
+const automation = `
+flowchart TB
+  INC["An incident is created or updated, or an analyst runs it by hand"] --> AR["Automation rule — runs inside Microsoft Sentinel"]
+  AR --> ACT{"What does the rule do?"}
+  ACT -->|"A built-in action"| BUILT["Change status or severity · assign an owner · add a tag · close as a false positive"]
+  ACT -->|"Run a playbook"| PB["Playbook — an Azure Logic App with the Microsoft Sentinel connector"]
+  PB --> EXT["Block an address on the firewall · disable a user in Entra ID · isolate a device<br/>in Defender · post to Teams · open a ticket"]
+`;
+
+const dcrTransform = `// A workspace transformation in a data collection rule: drop the noise before
+// it is billed, and redact a field you are not allowed to store.
+source
+| where EventID in (4624, 4625, 4672, 4720, 4732, 4688)
+| where not(Account endswith "$")          // machine accounts
+| extend Account = iff(EventID == 4625, "REDACTED", Account)
+| project TimeGenerated, Computer, EventID, Account, LogonType, IpAddress`;
+---
+
+<NoteLayout
+  slug="skill-4-security-posture-monitoring"
+  description="SC-500 Skill 4: Defender CSPM, regulatory compliance, workload protection plans, multicloud connectors, Defender Vulnerability Management, Defender EASM, and Microsoft Sentinel end to end — workspaces, roles, content hub, connectors, data collection rules, custom tables, retention tiers, automation rules and playbooks — plus Microsoft Security Copilot."
+  intro="Everything the first three domains configured now has to be measured, collected and acted on. Two big products dominate: Microsoft Defender for Cloud for posture, and Microsoft Sentinel for collection and response — with Security Copilot as the layer over both."
+  themeColor="#a4262c"
+>
+  <p class="lead">
+    The recurring question in this domain is <strong>posture or detection?</strong> Posture asks "is this configured
+    safely?" and is answered by Defender for Cloud recommendations, secure score and attack paths. Detection asks "is
+    something happening right now?" and is answered by workload protection plans, Defender XDR and Sentinel analytics
+    rules. Sort the scenario into one of those two buckets first.
+  </p>
+
+  <h2 id="defender-for-cloud">4.1 Managing posture with Microsoft Defender for Cloud</h2>
+  <Mermaid code={dfcLayers} caption="Three commercial layers. Foundational CSPM is free and cannot be turned off; Defender CSPM adds the graph-based capabilities; the workload plans add runtime detection." />
+
+  <h3>What Defender CSPM adds over the free tier</h3>
+  <div class="table-wrap">
+    <table class="tbl t-crimson">
+      <thead>
+        <tr><th>Capability</th><th>What it is for</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Attack path analysis</strong></td><td>Chains individual findings into an exploitable route — "internet-exposed VM with a critical vulnerability that has a managed identity with Contributor on a subscription holding sensitive data". Fixing one choke point breaks the whole path, which is how you prioritise.</td></tr>
+        <tr><td><strong>Cloud security explorer</strong></td><td>Query the underlying security graph directly. "Show me every storage container with sensitive data that is publicly reachable", answered without writing KQL.</td></tr>
+        <tr><td><strong>Agentless scanning</strong></td><td>Vulnerabilities, software inventory and secrets from disk snapshots, no agent installed.</td></tr>
+        <tr><td><strong>Sensitive data discovery</strong></td><td>Classifies data in storage accounts and databases, using Purview sensitive information types and labels, so risk can be weighted by what is actually at stake.</td></tr>
+        <tr><td><strong>Secret scanning</strong></td><td>Plaintext credentials on disks, in container images, in repositories and in IaC — then maps where each secret could be used.</td></tr>
+        <tr><td><strong>DevOps security</strong></td><td>Connectors to Azure DevOps, GitHub and GitLab bringing code, dependency, IaC and secret findings into the same view — "code to cloud".</td></tr>
+        <tr><td><strong>Governance rules</strong></td><td>Assign recommendations to owners with due dates, and report on the backlog. The answer to "make remediation accountable".</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Secure score and regulatory compliance</h3>
+  <ul>
+    <li>Secure score is calculated from recommendations grouped into <strong>security controls</strong>; you only earn a control's points when <em>every</em> resource in it is healthy.</li>
+    <li>The <strong>Microsoft cloud security benchmark</strong> is applied by default to every subscription and cannot be removed. Add PCI DSS, ISO/IEC 27001, NIST SP 800-53, CIS or a sovereign standard on top in <strong>Environment settings → Security policies</strong>.</li>
+    <li><strong>Custom standards</strong> and custom recommendations (authored as Azure Policy definitions or KQL-based graph queries) cover internal requirements.</li>
+    <li>An <strong>exemption</strong> marks a resource or recommendation as waived or mitigated so it stops dragging the score down, with a justification and an optional expiry.</li>
+    <li>Compliance assessment requires <strong>Defender CSPM, Defender for Servers Plan 2 or any other paid plan</strong> on the subscription — the free tier gives you MCSB recommendations but not the compliance dashboard.</li>
+  </ul>
+
+  <h3>Workload protection plans</h3>
+  <p>Each is enabled per subscription (some also per resource), and each brings its own alerts:</p>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Plan</th><th>Detects</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Defender for Servers</td><td>Endpoint threats on Windows and Linux via Defender for Endpoint, plus vulnerabilities, FIM and JIT</td></tr>
+        <tr><td>Defender for Storage</td><td>Anomalous access, malware uploads, sensitive data exfiltration</td></tr>
+        <tr><td>Defender for Databases</td><td>SQL injection, brute force, anomalous access, plus SQL vulnerability assessment</td></tr>
+        <tr><td>Defender for Containers</td><td>Registry vulnerabilities, cluster misconfiguration, runtime threats and binary drift</td></tr>
+        <tr><td>Defender for App Service</td><td>Web shells, dangling DNS takeover, suspicious process execution</td></tr>
+        <tr><td>Defender for Key Vault</td><td>Unusual secret access patterns and access from suspicious sources</td></tr>
+        <tr><td>Defender for Resource Manager</td><td>Suspicious control-plane operations — exploitation toolkits, risky role assignments</td></tr>
+        <tr><td>Defender for DNS</td><td>Anomalous DNS queries — exfiltration over DNS, communication with known-bad domains</td></tr>
+        <tr><td>Defender for APIs</td><td>API inventory, exposure and abuse, for APIs published through API Management</td></tr>
+        <tr><td><strong>Defender for AI Services</strong></td><td>Runtime protection for generative AI workloads — jailbreaks, prompt injection, data exposure and suspicious access patterns</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Multicloud and hybrid</h3>
+  <ul>
+    <li><strong>AWS</strong> — create an AWS connector, which deploys a CloudFormation (or Terraform) template creating cross-account roles. Choose which plans to extend: CSPM, Servers, Containers, Databases.</li>
+    <li><strong>GCP</strong> — a GCP project or organisation connector using <strong>workload identity federation</strong>, so there is no service account key to store.</li>
+    <li><strong>On-premises and other clouds' VMs</strong> — onboard through <strong>Azure Arc</strong>, which makes them ordinary Azure resources for policy, Defender and Machine Configuration purposes.</li>
+  </ul>
+
+  <h3>Vulnerability management and the external attack surface</h3>
+  <ul>
+    <li>
+      <strong>Microsoft Defender Vulnerability Management (MDVM)</strong> is the built-in scanner for Azure, AWS, GCP and
+      Arc-enabled machines. Agent-based scanning comes with <strong>Defender for Servers Plan 1 and 2</strong>;
+      agentless scanning and the <strong>premium</strong> features — certificate assessment, baseline assessment,
+      vulnerable application blocking — are <strong>Plan 2</strong>. A bring-your-own-licence Qualys or Rapid7 scanner is
+      also supported and needs no paid Defender plan.
+    </li>
+    <li>
+      <strong>Microsoft Defender External Attack Surface Management (Defender EASM)</strong> looks at you from the
+      outside. You deploy it as an Azure resource (with a 30-day trial), seed a discovery group with domains, hosts, IP
+      blocks, ASNs and WHOIS data, and it builds an inventory of internet-facing assets you may not know you own. It
+      feeds the <strong>External Attack Surface Protection initiative</strong> in Microsoft Security Exposure
+      Management, where its findings join the unified exposure graph.
+    </li>
+  </ul>
+
+  <Callout type="exam" title="Inside-out or outside-in">
+    <p>
+      <strong>Defender CSPM</strong> tells you about resources you have in your subscriptions. <strong>Defender
+      EASM</strong> tells you about assets that resolve to your organisation on the public internet — including the
+      forgotten marketing subdomain nobody put in a subscription. When the scenario says "discover unprotected assets we
+      do not know about" or "shadow IT exposed to the internet", it is EASM.
+    </p>
+  </Callout>
+
+  <h2 id="sentinel-workspaces">4.2 Microsoft Sentinel: workspaces and roles</h2>
+  <p>
+    Sentinel is a solution enabled <em>on</em> a Log Analytics workspace — the workspace holds the data, Sentinel adds
+    the SIEM and SOAR layer. It is increasingly operated from the <strong>Microsoft Defender portal</strong> alongside
+    Defender XDR, which is where the unified incident queue and advanced hunting live.
+  </p>
+
+  <h3>Workspace design decisions the exam tests</h3>
+  <ul>
+    <li><strong>One workspace wherever possible</strong> — correlation across sources is the point of a SIEM, and cross-workspace queries cost complexity.</li>
+    <li>Split when you must for <strong>data residency</strong>, <strong>data ownership between tenants</strong>, or genuinely separate <strong>retention and cost</strong> ownership.</li>
+    <li>For finer access within one workspace, use <strong>resource-context RBAC</strong> (a user who can read the Azure resource can read its logs) or <strong>table-level RBAC</strong> (a custom role with <code>Microsoft.OperationalInsights/workspaces/query/&lt;Table&gt;/read</code>).</li>
+    <li>Managed service providers use <strong>Azure Lighthouse</strong> for delegated cross-tenant access.</li>
+  </ul>
+
+  <div class="table-wrap">
+    <table class="tbl t-crimson">
+      <thead>
+        <tr><th>Role</th><th>Can do</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Microsoft Sentinel Reader</strong></td><td>View data, incidents, workbooks and other resources. Read-only.</td></tr>
+        <tr><td><strong>Microsoft Sentinel Responder</strong></td><td>Everything Reader can, plus manage incidents — assign, change severity, add comments, close.</td></tr>
+        <tr><td><strong>Microsoft Sentinel Contributor</strong></td><td>Everything Responder can, plus create and edit analytics rules, workbooks and other artifacts.</td></tr>
+        <tr><td><strong>Microsoft Sentinel Playbook Operator</strong></td><td>List, view and manually run playbooks — without the right to edit them.</td></tr>
+        <tr><td><strong>Microsoft Sentinel Automation Contributor</strong></td><td>Assigned to the Sentinel service itself on the playbooks' resource group, so automation rules are allowed to run them. Not for humans.</td></tr>
+        <tr><td><strong>Logic App Contributor</strong></td><td>Needed <em>in addition</em> by anyone who has to author or edit a playbook.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="tip" title="Least privilege for an analyst">
+    <p>
+      A tier-1 analyst who triages incidents and runs approved playbooks but must not change detection logic gets{' '}
+      <strong>Microsoft Sentinel Responder</strong> plus <strong>Microsoft Sentinel Playbook Operator</strong> — not
+      Contributor. This exact combination is a recurring exam answer.
+    </p>
+  </Callout>
+
+  <h2 id="content-hub-and-connectors">4.3 Content hub and data connectors</h2>
+  <p>
+    The <strong>content hub</strong> is the in-product marketplace. You install <strong>solutions</strong> — packaged
+    bundles containing data connectors, analytics rules, hunting queries, workbooks, playbooks, parsers and watchlists
+    for a given product — rather than installing each artifact separately. Installed content is then managed under{' '}
+    <strong>Content management</strong>, where updates are applied.
+  </p>
+
+  <Mermaid code={sentinelPipeline} caption="Every path ends in a table, and the table's tier decides what you can do with the data. Choosing the tier is a cost decision with detection consequences." />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Source</th><th>Mechanism</th><th>Landing table</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Azure resources — Key Vault, storage, firewall, NSG, Azure SQL</td><td><strong>Diagnostic settings</strong> on the resource, pointed at the workspace. Deploy them at scale with an Azure Policy <code>DeployIfNotExists</code> assignment.</td><td><code>AzureDiagnostics</code> or a resource-specific table</td></tr>
+        <tr><td>Azure Activity log</td><td>The Azure Activity connector (a diagnostic setting at subscription scope)</td><td><code>AzureActivity</code></td></tr>
+        <tr><td>Microsoft Entra ID</td><td>The Microsoft Entra ID connector</td><td><code>SigninLogs</code>, <code>AuditLogs</code>, <code>AADNonInteractiveUserSignInLogs</code></td></tr>
+        <tr><td>Microsoft Defender XDR</td><td>The Defender XDR connector, which brings incidents and raw advanced-hunting tables</td><td><code>SecurityIncident</code>, <code>DeviceEvents</code>, <code>AlertInfo</code> and friends</td></tr>
+        <tr><td>Windows Security events</td><td><strong>Azure Monitor Agent</strong> plus a <strong>data collection rule</strong>. Presets: <em>All events</em>, <em>Common</em>, <em>Minimal</em>, or custom XPath queries.</td><td><code>SecurityEvent</code></td></tr>
+        <tr><td>Windows Event Forwarding</td><td>Endpoints forward to a collector server; the agent on the collector ships the subscription's events</td><td><code>SecurityEvent</code> / <code>WindowsEvent</code></td></tr>
+        <tr><td>Syslog and CEF appliances</td><td>The appliance sends to a <strong>Linux forwarder</strong> running the Azure Monitor Agent on port 514; a DCR routes it</td><td>CEF → <code>CommonSecurityLog</code> (extra non-standard fields go to <code>AdditionalExtensions</code>); Syslog → <code>Syslog</code></td></tr>
+        <tr><td>SaaS and REST APIs</td><td>A content hub connector, or one built with the <strong>Codeless Connector Platform</strong></td><td>A custom table</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="Filter at the agent, not after ingestion">
+    <p>
+      The most-tested cost lever in Sentinel is that a <strong>data collection rule filters at the source</strong>. The
+      agent evaluates the rule and ships only the events you asked for, so unwanted data is never billed. A{' '}
+      <strong>workspace transformation</strong> in the DCR goes further, letting you drop rows and redact or drop columns
+      with KQL <em>before</em> the data lands. Choosing <em>All events</em> and filtering later in a query is the wrong
+      answer — you have already paid for it.
+    </p>
+  </Callout>
+
+  <CodeBlock lang="kusto" label="dcr transform" code={dcrTransform} />
+
+  <h2 id="custom-tables-and-retention">4.4 Custom tables, tiers and retention</h2>
+  <p>
+    Custom tables carry a <strong><code>_CL</code></strong> suffix and are created in the workspace with an explicit
+    schema, then populated through a DCR and the Logs Ingestion API (or a connector). Search job results land in a
+    separate table with an <strong><code>_SRCH</code></strong> suffix.
+  </p>
+
+  <h3>Table plans in Azure Monitor</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Plan</th><th>Interactive retention</th><th>Use for</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Analytics</strong></td><td>Configurable, <strong>4 to 730 days</strong></td><td>Continuous monitoring, real-time detection, multi-table queries. The only plan that supports the full feature set.</td></tr>
+        <tr><td><strong>Basic</strong></td><td>Fixed at <strong>30 days</strong></td><td>Troubleshooting and incident response; discounted ingestion, single-table queries only.</td></tr>
+        <tr><td><strong>Auxiliary</strong></td><td>Fixed at <strong>30 days</strong></td><td>Verbose, low-touch data kept for audit and compliance; the cheapest ingestion, unoptimised single-table queries.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Tiers in Microsoft Sentinel</h3>
+  <div class="table-wrap">
+    <table class="tbl t-crimson">
+      <thead>
+        <tr><th></th><th>Analytics tier</th><th>Data Lake tier</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Nickname</td><td>Hot / interactive</td><td>Cold</td></tr>
+        <tr><td>Default retention</td><td><strong>90 days for Sentinel</strong>, 30 days for Defender XDR data</td><td>Matches the analytics retention by default</td></tr>
+        <tr><td>Maximum retention</td><td><strong>Two years</strong>, charged beyond the included period</td><td><strong>Twelve years</strong></td></tr>
+        <tr><td>Analytics rules, hunting, workbooks, watchlists, parsers</td><td>✅ full support</td><td>❌ limited</td></tr>
+        <tr><td>Query cost</td><td>Included</td><td>Charged per query, and slower</td></tr>
+        <tr><td>Search jobs</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Summary rules</td><td>✅</td><td>✅ full KQL over a single table</td></tr>
+        <tr><td>Restore</td><td>✅</td><td>❌ — promote data instead, with a KQL or notebook job</td></tr>
+        <tr><td>Data export</td><td>✅</td><td>❌</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    Both tiers are managed from <strong>Data management → Tables</strong>, where you set the analytics retention and the{' '}
+    <strong>total retention</strong> independently per table. Data that ages out of analytics retention remains readable
+    in the lake for the remainder of the total retention.
+  </p>
+
+  <Callout type="tip" title="The three ways to get at old data">
+    <p>
+      <strong>Search jobs</strong> run an asynchronous query over the full dataset, including long-term retention, and
+      write the results to a new <code>_SRCH</code> table. <strong>Restore</strong> brings a time range of an analytics
+      table back into hot query for a while. <strong>KQL jobs, Spark jobs and notebooks</strong> are the data lake's own
+      analysis tools and can promote results back into the analytics tier. <strong>Summary rules</strong> aggregate
+      high-volume logs on a schedule and store the small result in the analytics tier — the standard way to keep
+      detections on firewall or proxy data you cannot afford to keep hot.
+    </p>
+  </Callout>
+
+  <h2 id="automation">4.5 Automation rules and playbooks</h2>
+  <Mermaid code={automation} caption="An automation rule is the trigger and the orchestrator; a playbook is a Logic App that reaches outside Sentinel. Automation rules can also chain several playbooks in a defined order." />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th></th><th>Automation rule</th><th>Playbook</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>What it is</td><td>A rule inside Microsoft Sentinel</td><td>An <strong>Azure Logic App</strong> with the Microsoft Sentinel connector</td></tr>
+        <tr><td>Triggered by</td><td>Incident created, incident updated, alert created, or run manually</td><td>Called by an automation rule, by an analytics rule, or manually by an analyst</td></tr>
+        <tr><td>Can do on its own</td><td>Change status, severity and owner; add tags; close as false or benign positive; run playbooks; stop further rules from running</td><td>Anything a Logic App connector can reach</td></tr>
+        <tr><td>Typical use</td><td>Suppress known-benign noise; auto-assign by severity; enforce an order of operations</td><td>Block an IP on Azure Firewall, disable a user in Microsoft Entra ID, isolate a device in Defender, post to Teams, open a ServiceNow ticket</td></tr>
+        <tr><td>Permission needed</td><td>Microsoft Sentinel Contributor</td><td><strong>Microsoft Sentinel Automation Contributor</strong> granted to the Sentinel service on the playbooks' resource group, so it may run them</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="Playbooks need an identity of their own">
+    <p>
+      A playbook that disables a user needs permission to do so. Give the Logic App a <strong>managed identity</strong>{' '}
+      and assign it the least-privileged role for the action — not a stored credential in an API connection, and not
+      Global Administrator. "The playbook runs but nothing happens" is almost always a missing role assignment on the
+      playbook's identity.
+    </p>
+  </Callout>
+
+  <h2 id="purview-audit">4.6 Querying Microsoft Purview Audit</h2>
+  <p>
+    Microsoft 365 activity — mailbox access, SharePoint file operations, Teams events, Copilot interactions, admin
+    actions — lands in the <strong>unified audit log</strong>. It is searched from the <strong>Microsoft Defender
+    portal</strong> under Audit (and from the Purview portal), filtered by date range, activity, user and workload.
+  </p>
+  <ul>
+    <li><strong>Audit (Standard)</strong> retains for <strong>180 days</strong>.</li>
+    <li><strong>Audit (Premium)</strong> retains Microsoft Entra, Exchange, SharePoint and OneDrive audit records for <strong>one year</strong> (extendable to ten with an add-on), adds <strong>audit log retention policies</strong>, higher API bandwidth, and <strong>Intelligent Insights</strong> events such as <code>MailItemsAccessed</code> and <code>Send</code> used in compromise investigations.</li>
+    <li>Searches run asynchronously as jobs; results can be exported.</li>
+    <li>For correlation with everything else, ingest the unified audit log into Sentinel through the Microsoft 365 connector rather than searching it by hand.</li>
+  </ul>
+
+  <h2 id="security-copilot">4.7 Microsoft Security Copilot</h2>
+  <p>
+    Security Copilot is a natural-language layer over the Microsoft security estate, available <strong>standalone</strong>{' '}
+    at <code>securitycopilot.microsoft.com</code> and <strong>embedded</strong> inside Defender, Sentinel, Entra, Intune
+    and Purview.
+  </p>
+
+  <h3>Capacity and workspaces</h3>
+  <ul>
+    <li>
+      Compute is bought as <strong>Security Compute Units (SCUs)</strong>, provisioned <strong>hourly</strong> against an
+      Azure subscription and resource group. You choose a <strong>prompt evaluation location</strong> (or allow
+      evaluation anywhere when your geography is busy) and can add <strong>overage units</strong> for spikes.
+    </li>
+    <li>
+      A <strong>workspace</strong> is a scoped, tenant-bound environment where users, automations and agents operate.
+      Workspaces let you segment by team, region or business unit, each with its own role assignments, prompt history,
+      plugin configuration and SCU capacity.
+    </li>
+    <li>Provisioning capacity requires <strong>Azure Owner or Contributor</strong> on the subscription or resource group, plus <strong>Security Administrator</strong> or higher in the tenant.</li>
+    <li>A usage dashboard and a capacity calculator help size it; SCUs billed hourly can be deleted and recreated to control cost while testing.</li>
+  </ul>
+
+  <h3>Permissions, and why they are not what people expect</h3>
+  <div class="table-wrap">
+    <table class="tbl t-crimson">
+      <thead>
+        <tr><th>Layer</th><th>Controls</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Security Copilot roles</strong> — owner and contributor</td><td>Access to the platform itself: creating sessions, and for owners, managing capacity, plugins, file upload and audit settings. These are <em>not</em> Microsoft Entra roles.</td></tr>
+        <tr><td><strong>Microsoft Entra and Purview roles</strong></td><td>Several roles inherit <strong>Copilot owner</strong> automatically so there are always at least two owners — including Global Administrator, Security Administrator, Billing Administrator, Intune Administrator, Entra Compliance Administrator, and the Purview administrative roles.</td></tr>
+        <tr><td><strong>Service RBAC</strong></td><td>What the answers can contain. Copilot uses <strong>on-behalf-of</strong> authentication and never exceeds your existing access — so a Copilot contributor still needs, for example, <em>Microsoft Sentinel Reader</em> to see incidents through the Sentinel plugin.</td></tr>
+        <tr><td><strong>Azure RBAC</strong></td><td>The SCU capacity resource in the subscription.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="The Copilot permission trap">
+    <p>
+      "A new analyst has the Security Copilot contributor role but their prompts return no Sentinel data." The answer is
+      never "give them Copilot owner". Copilot cannot surface anything the signed-in user could not already reach, so
+      the fix is the underlying service role — <strong>Microsoft Sentinel Reader</strong> on the workspace. And do not
+      grant a privileged Microsoft Entra role such as Security Administrator purely to obtain Copilot access; create a
+      security group and assign it a Copilot role instead.
+    </p>
+  </Callout>
+
+  <h3>Plugins, promptbooks and agents</h3>
+  <ul>
+    <li><strong>Plugins</strong> connect Copilot to data — Microsoft plugins (Defender XDR, Sentinel, Entra, Intune, Purview, Defender Threat Intelligence, EASM), non-Microsoft plugins, and custom plugins built from an API spec or KQL. Plugin settings can be managed at <strong>workspace or organisation level</strong> rather than per user.</li>
+    <li><strong>Promptbooks</strong> are saved sequences of prompts — repeatable workflows for incident summarisation, script analysis or threat actor research.</li>
+    <li><strong>Connectors</strong> wrap the Copilot API so Logic Apps and Copilot Studio can call into it from existing automation.</li>
+    <li>
+      <strong>Agents</strong> run autonomously against a trigger — the Phishing Triage Agent in Defender, the
+      Conditional Access Optimization Agent in Entra, the Threat Intelligence Briefing Agent — and are discovered in the
+      agent library or in <strong>Microsoft Security Store</strong>. Getting an agent from the Store needs Azure billing
+      Contributor or Owner plus a Copilot owner or contributor role, and sometimes a Global Administrator to grant the
+      agent its permissions. Agents consume SCUs on top of any subscription fee, and their activity is audited.
+    </li>
+  </ul>
+
+  <h2 id="skill-4-checklist">Skill 4 checklist</h2>
+  <div class="card">
+    <ul>
+      <li>Foundational CSPM is free; attack paths, cloud security explorer, agentless scanning and secret scanning need the Defender CSPM plan.</li>
+      <li>MCSB is always applied and cannot be removed; other standards are layered on top; the compliance dashboard needs a paid plan.</li>
+      <li>Defender CSPM looks inward at your subscriptions; Defender EASM looks inward from the internet.</li>
+      <li>Responder plus Playbook Operator is the least-privileged triage analyst.</li>
+      <li>Filter with a data collection rule at the agent, and transform before ingestion — never after.</li>
+      <li>CEF lands in <code>CommonSecurityLog</code>; non-standard fields land in <code>AdditionalExtensions</code>.</li>
+      <li>Analytics tier: 90 days included, two years maximum. Data lake tier: up to twelve years, restricted features.</li>
+      <li>Automation rules orchestrate; playbooks are Logic Apps and need their own managed identity and roles.</li>
+      <li>Security Copilot never exceeds the user's own permissions — fix the service role, not the Copilot role.</li>
+    </ul>
+  </div>
+  <p>
+    Next: the <a href={href('ai-agent-security')}>AI &amp; agent security deep dive</a>, which pulls the AI material out
+    of Skills 1, 3 and 4 into one narrative.
+  </p>
+</NoteLayout>

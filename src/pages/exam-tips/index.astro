@@ -1,0 +1,296 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { SITE } from '../../data/site';
+import { href } from '../../lib/urls';
+
+const masterTree = `
+flowchart TB
+  Q["Read the requirement, then ask what it is really about"] --> A{"Is it about applying a control,<br/>or about knowing the state?"}
+
+  A -->|"Applying<br/>a control"| CTRL{"What must the<br/>control govern?"}
+  CTRL -->|"Who may act"| RBAC["Azure RBAC, or a<br/>Microsoft Entra role —<br/>PIM if it must be<br/>temporary or approved"]
+  CTRL -->|"Its shape"| POL["Azure Policy<br/>Deny to prevent,<br/>DeployIfNotExists<br/>to remediate"]
+  CTRL -->|"Reachability"| NET["Firewall rules, private<br/>endpoint, NSG, security<br/>admin rule, access<br/>restrictions"]
+  CTRL -->|"Data at rest"| ENC["Encryption — TDE,<br/>customer-managed keys,<br/>Always Encrypted,<br/>disk encryption"]
+
+  A -->|"Knowing<br/>the state"| KNOW{"Configuration,<br/>or live activity?"}
+  KNOW -->|"Is the setup safe?"| CSPM["Defender for Cloud<br/>recommendations, secure<br/>score, compliance,<br/>attack paths"]
+  KNOW -->|"Is something<br/>happening now?"| DET["A Defender workload<br/>protection plan, or a<br/>Microsoft Sentinel<br/>analytics rule"]
+`;
+
+const defenderTree = `
+flowchart TB
+  Q["A Defender feature is the answer — but which one?"] --> A{"What is being protected<br/>or examined?"}
+  A -->|"Configuration risk,<br/>attack paths, secrets,<br/>exposed data"| CSPM["Defender CSPM plan"]
+  A -->|"A specific resource<br/>type at runtime"| CWP{"Which resource type?"}
+  A -->|"Internet-facing assets<br/>you may not know<br/>you own"| EASM["Defender External Attack<br/>Surface Management"]
+  A -->|"Cross-product incidents,<br/>hunting, agents"| XDR["Microsoft Defender XDR,<br/>in the Defender portal"]
+  CWP -->|"Windows and<br/>Linux machines"| SRV["Defender for Servers<br/>P1 for EDR, P2 for<br/>agentless, JIT and FIM"]
+  CWP -->|"Blobs and files"| STO["Defender for Storage"]
+  CWP -->|"SQL, MySQL,<br/>PostgreSQL, Cosmos"| DB["Defender for Databases"]
+  CWP -->|"Kubernetes<br/>and registries"| CON["Defender for Containers"]
+  CWP -->|"Generative AI<br/>workloads"| AI["Defender for AI Services"]
+`;
+---
+
+<NoteLayout
+  slug="exam-tips"
+  description="SC-500 exam tips: key numbers, decision trees, the naming traps and commonly mistaken topics, a scenario-to-answer lookup table across all four skills, and a pre-exam checklist."
+  intro="The final-week page. Numbers to memorise, boundaries that are constantly confused, traps that cost marks, and a way of reading questions that beats knowing one more feature."
+  themeColor="#8a6200"
+>
+  <p class="lead">
+    By this point you know the products. What separates a pass from a near-miss is <strong>discrimination</strong> —
+    telling two similar controls apart quickly, under time pressure, when the question has been written specifically to
+    make them look interchangeable. Everything below is organised around that.
+  </p>
+
+  <Callout type="note" title="Exam logistics">
+    <p>
+      <strong>120 minutes.</strong> <strong>700 out of 1000 to pass.</strong> Proctored, and it may include interactive
+      components. Currently offered in English. You can retake 24 hours after a first failed attempt; later retakes have
+      longer waits. At the time of writing there is <strong>no official practice assessment</strong> — check{' '}
+      <a href={SITE.certPage} target="_blank" rel="noopener">the certification page</a> before you book, because it is
+      expected within roughly eight weeks of the exam going generally available.
+    </p>
+  </Callout>
+
+  <h2 id="how-to-read-a-question">How to read an SC-500 question</h2>
+  <div class="card">
+    <ol class="steps">
+      <li>
+        <strong>Find the requirement, then the constraint.</strong> Nearly every stem has both: "must be able to X"
+        and "without Y" or "with the least administrative effort". The constraint is what separates the two plausible
+        answers, so read it twice.
+      </li>
+      <li>
+        <strong>Name the layer before you look at the options.</strong> Identity, network, resource configuration, data,
+        posture or detection. Options from the wrong layer eliminate themselves.
+      </li>
+      <li>
+        <strong>Check the scope words.</strong> "All current and future subscriptions" means management group. "Every
+        database on the server, including new ones" means server-level. "One specific secret" means Azure RBAC on the
+        secret.
+      </li>
+      <li>
+        <strong>Prefer the answer that removes standing access or a public path.</strong> When two options both work,
+        this is the tie-breaker the exam uses.
+      </li>
+      <li>
+        <strong>On "minimise effort" questions, prefer the built-in.</strong> Built-in policy over custom policy,
+        built-in role over custom role, content hub solution over hand-built rules, managed identity over anything you
+        have to rotate.
+      </li>
+      <li>
+        <strong>On ordering questions, say the order out loud before you drag.</strong> Report-only before on. Detection
+        before Prevention. Audit before Deny. DNAT before network before application.
+      </li>
+    </ol>
+  </div>
+
+  <h2 id="master-decision-tree">The master decision tree</h2>
+  <Mermaid code={masterTree} caption="Six questions, six families of answer. Placing the scenario here first is worth more than any individual fact below." />
+
+  <h2 id="which-defender">Which Defender feature?</h2>
+  <Mermaid code={defenderTree} caption="Defender is a brand across at least four products. Deciding which one is being asked about is half the battle on Skill 4 questions." />
+
+  <h2 id="numbers">Numbers worth memorising</h2>
+  <div class="table-wrap">
+    <table class="tbl t-amber">
+      <thead>
+        <tr><th>Value</th><th>Applies to</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>700 / 1000</strong>, <strong>120 minutes</strong></td><td>Pass mark and exam duration</td></tr>
+        <tr><td><strong>100–4096</strong></td><td>NSG rule priority range (lower number evaluated first)</td></tr>
+        <tr><td><strong>1–4096</strong></td><td>Virtual Network Manager security admin rule priority range</td></tr>
+        <tr><td><strong>65000 / 65001 / 65500</strong></td><td>NSG default rule priorities</td></tr>
+        <tr><td><strong>7–90 days, default 90</strong></td><td>Key Vault soft-delete retention</td></tr>
+        <tr><td><strong>1–24 hours</strong></td><td>PIM maximum activation duration</td></tr>
+        <tr><td><strong>7 days</strong></td><td>Maximum lifetime of a user delegation SAS</td></tr>
+        <tr><td><strong>5,000</strong></td><td>Custom Azure roles per tenant</td></tr>
+        <tr><td><strong>6 levels</strong></td><td>Management group depth below the root group</td></tr>
+        <tr><td><strong>/26 or larger</strong></td><td>Required size of <code>AzureBastionSubnet</code> for dedicated Bastion SKUs</td></tr>
+        <tr><td><strong>24 hours</strong></td><td>Agentless machine scanning cycle — not configurable</td></tr>
+        <tr><td><strong>10,000 GB per account per month</strong></td><td>Default Defender for Storage malware scanning cap</td></tr>
+        <tr><td><strong>90 days</strong> included, <strong>2 years</strong> maximum</td><td>Microsoft Sentinel analytics tier retention (30 days default for Defender XDR data)</td></tr>
+        <tr><td><strong>12 years</strong></td><td>Maximum total retention in the Sentinel data lake tier</td></tr>
+        <tr><td><strong>4–730 days</strong></td><td>Interactive retention range for an Analytics table plan</td></tr>
+        <tr><td><strong>30 days, fixed</strong></td><td>Interactive retention for Basic and Auxiliary table plans</td></tr>
+        <tr><td><strong>180 days</strong> / <strong>1 year</strong></td><td>Purview Audit Standard / Premium retention (Premium extendable to 10 years)</td></tr>
+        <tr><td><strong>500</strong></td><td>Application segments on an Entra Private Access Quick Access app</td></tr>
+        <tr><td><strong>Top 100 sites, weekly</strong></td><td>Default Purview DSPM data risk assessment scope</td></tr>
+        <tr><td><strong>429 / 403</strong></td><td>AI Gateway: tokens-per-minute limit exceeded / total token quota exceeded</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="boundaries">Boundaries that are constantly confused</h2>
+  <div class="table-wrap">
+    <table class="tbl t-amber">
+      <thead>
+        <tr><th>These two</th><th>Differ because…</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Azure RBAC vs Microsoft Entra role</td><td>Resources vs the tenant. Different blades, different administrators.</td></tr>
+        <tr><td>Azure Policy vs RBAC vs resource lock</td><td>What it may look like vs who may touch it vs whether it can be deleted.</td></tr>
+        <tr><td>Exemption vs exclusion</td><td>Exemption suppresses the result with a justification; exclusion removes the scope from the assignment.</td></tr>
+        <tr><td>Service endpoint vs private endpoint</td><td>Subnet identity presented to a public endpoint vs a private IP in your subnet. Only the private endpoint is reachable from on-premises.</td></tr>
+        <tr><td>Security admin rule vs NSG rule</td><td>Central governance at the virtual network, evaluated first, with an Always-allow action NSGs do not have.</td></tr>
+        <tr><td>Access restrictions vs virtual network integration</td><td>Inbound vs outbound, on App Service and Functions.</td></tr>
+        <tr><td>TDE vs Always Encrypted vs dynamic data masking</td><td>Stolen media vs privileged insiders vs presentation only.</td></tr>
+        <tr><td>User delegation SAS vs service SAS vs account SAS</td><td>Signed by Entra vs by the account key, and therefore revocable in three very different ways.</td></tr>
+        <tr><td>Defender for Servers P1 vs P2</td><td>P2 adds agentless scanning, JIT, FIM, compliance, OS baselines and premium vulnerability management.</td></tr>
+        <tr><td>Defender CSPM vs Defender EASM</td><td>Looking at resources you own vs assets that resolve to you on the internet.</td></tr>
+        <tr><td>Analytics tier vs data lake tier</td><td>Full detection features and included queries vs cheap long retention and restricted features.</td></tr>
+        <tr><td>Automation rule vs playbook</td><td>Orchestration inside Sentinel vs a Logic App that reaches outside it.</td></tr>
+        <tr><td>Sign-in frequency vs continuous access evaluation</td><td>A timer vs event-driven near-real-time revocation.</td></tr>
+        <tr><td>Restricted Content Discovery vs Restricted Access Control</td><td>Discoverability, permissions untouched vs a genuine access boundary.</td></tr>
+        <tr><td>Foundry guardrail vs Defender real-time protection</td><td>Screening text vs stopping a tool invocation.</td></tr>
+        <tr><td>Immutable vault vs multi-user authorization vs soft delete</td><td>Cannot be shortened vs needs a second approver vs recoverable after deletion.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="traps">Traps that cost marks</h2>
+
+  <h3>Identity and governance</h3>
+  <ul>
+    <li><strong>Owner does not grant data access.</strong> Storage and Key Vault under RBAC need a separate data-plane role.</li>
+    <li><strong>There is no deny you can assign</strong> in Azure RBAC. To stop an action, use Azure Policy.</li>
+    <li><strong>A <code>ReadOnly</code> lock blocks listing storage account keys</strong>, because that call is a write.</li>
+    <li><strong>A lock never protects data</strong> — it is a control-plane control only.</li>
+    <li><strong>Locks cannot be applied at a management group.</strong></li>
+    <li><strong>Security defaults and Conditional Access are mutually exclusive.</strong></li>
+    <li><strong>Number matching in Microsoft Authenticator cannot be turned off.</strong></li>
+    <li><strong>Authenticator push is not phishing-resistant.</strong> Passkeys, Windows Hello for Business and certificate-based authentication are.</li>
+    <li><strong>Application permissions always require admin consent</strong>; delegated ones may not.</li>
+    <li><strong>DeployIfNotExists needs a managed identity and a remediation task</strong> — creating the assignment fixes nothing that already exists.</li>
+    <li><strong>Purge protection cannot be turned off</strong>, and <strong>infrastructure encryption can only be chosen at creation</strong>.</li>
+    <li><strong>Break-glass accounts must be excluded</strong> from Conditional Access and left out of PIM.</li>
+  </ul>
+
+  <h3>Storage, data and network</h3>
+  <ul>
+    <li><strong>A private endpoint without a private DNS zone does nothing</strong> — clients still resolve the public address.</li>
+    <li><strong>A private endpoint does not disable the public path.</strong> Set public network access to Disabled as well.</li>
+    <li><strong>Storage firewall rules reject private IP ranges.</strong> Use a service endpoint or private endpoint for internal subnets.</li>
+    <li><strong>"Allow Azure services and resources to access this server" means any Azure tenant</strong>, not just yours.</li>
+    <li><strong>Private endpoints are per sub-resource</strong> — one for blob does nothing for file.</li>
+    <li><strong>Inbound is subnet NSG then NIC NSG; outbound is NIC then subnet.</strong> Both must allow.</li>
+    <li><strong>Security admin rules exempt several subnets</strong> — Application Gateway, Bastion, Azure Firewall, Route Server, VPN Gateway, Virtual WAN and ExpressRoute gateway.</li>
+    <li><strong>Only one security admin configuration per region per network manager.</strong></li>
+    <li><strong>IDPS, TLS inspection and URL filtering are Azure Firewall Premium only</strong>, and are configured in a firewall policy, not on the firewall.</li>
+    <li><strong>Database-level SQL firewall rules are evaluated before server-level ones</strong>, and can only be created with T-SQL.</li>
+    <li><strong>NSG flow logs are retired on 30 September 2027</strong>; use virtual network flow logs.</li>
+  </ul>
+
+  <h3>Compute and applications</h3>
+  <ul>
+    <li><strong>Integrity monitoring requires vTPM, which requires trusted launch.</strong></li>
+    <li><strong>Bastion SKUs upgrade but never downgrade.</strong> Session recording and private-only deployment are Premium only.</li>
+    <li><strong>JIT is Defender for Servers Plan 2</strong>, and it edits NSG and firewall rules rather than removing public IPs.</li>
+    <li><strong>Agentless malware scanning is Plan 2 only</strong>, even though other agentless capabilities come with Defender CSPM.</li>
+    <li><strong>File integrity monitoring is not on by default</strong> even in Plan 2.</li>
+    <li><strong>AKS local accounts bypass Microsoft Entra entirely.</strong> Disable them.</li>
+    <li><strong>The ACR admin user is a shared password.</strong> Disable it and use <code>AcrPull</code>.</li>
+    <li><strong>Function keys are not authentication</strong>, and the master key is administrative.</li>
+    <li><strong>Access restrictions must also be applied to the <code>scm</code> site</strong>, or the deployment endpoint stays open.</li>
+    <li><strong>WAF: tune with exclusions, not by disabling rules</strong>, and start in Detection mode.</li>
+    <li><strong>An APIM subscription key identifies a subscription, not a user.</strong></li>
+  </ul>
+
+  <h3>Posture, monitoring and AI</h3>
+  <ul>
+    <li><strong>The compliance dashboard needs a paid plan</strong>; MCSB recommendations alone come free.</li>
+    <li><strong>Filter with a data collection rule at the agent</strong> — filtering in a query after ingestion has already cost you.</li>
+    <li><strong>CEF lands in <code>CommonSecurityLog</code></strong>, with non-standard fields in <code>AdditionalExtensions</code>.</li>
+    <li><strong>Playbooks need their own managed identity and role assignments</strong>, and Sentinel needs Automation Contributor on their resource group.</li>
+    <li><strong>Security Copilot never exceeds the signed-in user's permissions.</strong> Fix the service role, not the Copilot role.</li>
+    <li><strong>An agent's guardrail overrides the model's</strong>, and Microsoft Default guardrails cannot be edited.</li>
+    <li><strong>Conditional Access for agents targets users for on-behalf-of flows</strong> and agent identities for app-only flows.</li>
+    <li><strong>429 is the rate limit; 403 is the quota.</strong></li>
+    <li><strong>Copilot Studio real-time protection covers generative orchestration agents only</strong> — classic agents are skipped.</li>
+    <li><strong>The Data and AI security dashboard stays empty</strong> without Defender CSPM with sensitive data discovery, Defender for Storage, Defender for Databases and AI threat protection.</li>
+  </ul>
+
+  <h2 id="scenario-lookup">Scenario-to-answer lookup</h2>
+  <div class="table-wrap">
+    <table class="tbl t-slate">
+      <thead>
+        <tr><th>The scenario says…</th><th>The answer is…</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>"Administrators must request access and be approved before using the role"</td><td>PIM eligible assignment with approval required</td></tr>
+        <tr><td>"Validate the impact before enforcing"</td><td>Conditional Access report-only mode</td></tr>
+        <tr><td>"Why did this policy apply to this one user?"</td><td>Conditional Access What If</td></tr>
+        <tr><td>"Prevent anyone creating a resource that breaks this rule"</td><td>Azure Policy with the <code>Deny</code> effect</td></tr>
+        <tr><td>"Fix the hundreds of resources that already break it"</td><td><code>DeployIfNotExists</code> or <code>Modify</code>, plus a remediation task</td></tr>
+        <tr><td>"Accept this non-compliance temporarily, with a recorded reason"</td><td>A policy exemption, category Waiver, with an expiry</td></tr>
+        <tr><td>"Remove the connection string from the application"</td><td>A managed identity plus the appropriate data role</td></tr>
+        <tr><td>"The deployment pipeline holds a client secret that keeps expiring"</td><td>Workload identity federation</td></tr>
+        <tr><td>"Grant access to one secret only"</td><td>Azure RBAC at the secret's scope, not an access policy</td></tr>
+        <tr><td>"A SAS leaked; invalidate it without disrupting other apps"</td><td>Delete the stored access policy, or revoke the user delegation key</td></tr>
+        <tr><td>"Stop anyone using storage account keys"</td><td><code>allowSharedKeyAccess = false</code></td></tr>
+        <tr><td>"The DBA must administer but must never read the salary column"</td><td>Always Encrypted</td></tr>
+        <tr><td>"Only calls from this subnet may reach the storage account"</td><td>Service endpoint with a virtual network rule, or a private endpoint</td></tr>
+        <tr><td>"Block inbound SSH everywhere, with exceptions for two networks"</td><td>Virtual Network Manager security admin rules at two priorities</td></tr>
+        <tr><td>"Inspect outbound TLS traffic for malware signatures"</td><td>Azure Firewall Premium with TLS inspection and IDPS</td></tr>
+        <tr><td>"Contractors need one internal app, not network access"</td><td>Microsoft Entra Private Access, per-app access</td></tr>
+        <tr><td>"Keep an audit trail of what administrators did in the remote session"</td><td>Azure Bastion Premium session recording</td></tr>
+        <tr><td>"Enforce the password policy inside 400 servers, including on-premises"</td><td>Azure Arc plus Azure Machine Configuration</td></tr>
+        <tr><td>"Stop unsigned containers being deployed"</td><td>The Azure Policy add-on for Kubernetes, deny effect, approved registries</td></tr>
+        <tr><td>"A rogue administrator must not be able to delete backups alone"</td><td>Multi-user authorization with a Resource Guard</td></tr>
+        <tr><td>"Discover internet-facing assets we do not know we own"</td><td>Defender External Attack Surface Management</td></tr>
+        <tr><td>"Reduce Sentinel ingestion cost without losing the events we alert on"</td><td>A data collection rule with a transformation, and move noisy tables to the data lake tier with summary rules</td></tr>
+        <tr><td>"Analysts triage incidents and run approved playbooks, nothing more"</td><td>Microsoft Sentinel Responder plus Playbook Operator</td></tr>
+        <tr><td>"Search audit data from two years ago"</td><td>A search job over long-term retention</td></tr>
+        <tr><td>"Copilot surfaces a site that is still under permissions review"</td><td>Restricted Content Discovery</td></tr>
+        <tr><td>"Stop a subverted agent from running a destructive tool"</td><td>A custom real-time protection rule in Defender Security for AI</td></tr>
+        <tr><td>"One project must not consume the whole model quota"</td><td>AI Gateway token limits in API Management</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="study-plan">A final-two-weeks plan</h2>
+  <div class="card">
+    <ol class="steps">
+      <li><strong>Days 1–2.</strong> Re-read <a href={href('security-foundations')}>Foundations</a> and <a href={href('skill-1-identity-access-governance')}>Skill 1</a>. Build a PIM eligible assignment and a Conditional Access policy in report-only mode in a trial tenant.</li>
+      <li><strong>Days 3–5.</strong> <a href={href('skill-2-storage-databases-networking')}>Skill 2</a>, the widest domain. Create a storage account with a private endpoint and no public access, and prove to yourself that DNS is what makes it work.</li>
+      <li><strong>Days 6–8.</strong> <a href={href('skill-3-secure-compute')}>Skill 3</a>. Deploy a VM with trusted launch behind Bastion, turn on JIT, and read the Defender for Servers plan comparison until P1 and P2 are automatic.</li>
+      <li><strong>Days 9–10.</strong> <a href={href('skill-4-security-posture-monitoring')}>Skill 4</a>. Stand up a Sentinel workspace, install one content hub solution, connect Azure Activity, and write a data collection rule that filters.</li>
+      <li><strong>Days 11–12.</strong> The <a href={href('ai-agent-security')}>AI &amp; agent security deep dive</a>, twice. Then re-read the Microsoft Learn page for each preview feature, because this is where the product has moved most recently.</li>
+      <li><strong>Day 13.</strong> This page. The numbers table, the boundaries table and the traps, out loud.</li>
+      <li><strong>Day 14.</strong> Re-read the official <a href={SITE.studyGuide} target="_blank" rel="noopener">skills measured</a> bullet by bullet and say one sentence about each. Anything you cannot, look up tonight. Then stop.</li>
+    </ol>
+  </div>
+
+  <h2 id="on-the-day">On the day</h2>
+  <ul>
+    <li><strong>Case studies first or last, but decide beforehand.</strong> They carry several questions on one scenario; reading the exhibit twice costs less than switching context twice.</li>
+    <li><strong>Mark and move.</strong> 120 minutes is comfortable if you do not stall. Flag anything that takes more than ninety seconds and come back.</li>
+    <li><strong>Answer every question.</strong> There is no negative marking.</li>
+    <li><strong>On yes/no statement sets, evaluate each statement independently.</strong> They are deliberately written so that two look identical and one word differs.</li>
+    <li><strong>Watch for "least privilege", "minimal administrative effort" and "without affecting users".</strong> Those three phrases pick the answer more often than any technical detail.</li>
+    <li><strong>Trust the current name.</strong> If an option uses a name you only know from an old blog post, it is more likely to be the distractor.</li>
+  </ul>
+
+  <Callout type="tip" title="And the meta-point">
+    <p>
+      SC-500 is an engineering exam about <em>reducing standing access and closing default-open paths</em>. When you
+      genuinely cannot decide, pick the option that gives somebody less, for less time, over a narrower path. It is
+      right far more often than chance.
+    </p>
+  </Callout>
+
+  <Callout type="warn" title="Verify before you rely on any of this">
+    <p>
+      These notes target the skills measured as of <strong>{SITE.skillsMeasured}</strong>. Microsoft revises both the
+      products and the objectives without notice, and the AI security surface in particular has already moved since this
+      exam launched. Re-read the official <a href={SITE.studyGuide} target="_blank" rel="noopener">SC-500 study
+      guide</a> before you book, and check the Microsoft Learn page for anything here that decides your answer.
+    </p>
+  </Callout>
+</NoteLayout>

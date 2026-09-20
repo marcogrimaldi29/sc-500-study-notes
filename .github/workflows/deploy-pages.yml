@@ -1,0 +1,76 @@
+name: Deploy to GitHub Pages
+
+# Builds the Astro site and publishes it to GitHub Pages. The Umami website ID
+# is injected into the built output from a repository secret, so the ID is
+# never committed to source.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build site
+        run: npm run build
+
+      - name: Inject Umami website ID
+        env:
+          UMAMI_WEBSITE_ID: ${{ secrets.UMAMI_WEBSITE_ID }}
+        run: |
+          if [ -n "$UMAMI_WEBSITE_ID" ]; then
+            # The placeholder is emitted by src/components/Analytics.astro into
+            # every page, and may also end up in a bundled script.
+            files=$(grep -rl '__UMAMI_WEBSITE_ID__' --include='*.html' --include='*.js' dist || true)
+            if [ -n "$files" ]; then
+              echo "$files" | while read -r f; do
+                sed -i "s/__UMAMI_WEBSITE_ID__/${UMAMI_WEBSITE_ID}/g" "$f"
+              done
+              echo "Injected Umami website ID into:"
+              echo "$files"
+            else
+              echo "::warning::No files contained the Umami placeholder — analytics disabled."
+            fi
+          else
+            echo "::warning::UMAMI_WEBSITE_ID secret not set — placeholder left in place, analytics disabled."
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ./dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

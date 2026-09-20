@@ -1,0 +1,403 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { SITE } from '../../data/site';
+import { href } from '../../lib/urls';
+
+// Wide one-line nodes and cluster titles no longer than the widest node: that
+// is what keeps the aspect ratio near 1.5 instead of leaving a tall, narrow
+// column of boxes floating inside an over-wide cluster.
+const hierarchy = `
+flowchart TB
+  subgraph TEN["Microsoft Entra tenant — one identity boundary for the organisation"]
+    subgraph MGT["Azure RBAC, Azure Policy and resource locks all inherit downwards"]
+      direction TB
+      ROOT["Root management group — one per tenant, created automatically"]
+      MG["Child management groups — up to six levels below the root"]
+      SUB["Subscription — billing, quota and policy boundary"]
+      RG["Resource group — lifecycle boundary"]
+      RES["Resource — the VM, storage account or key vault you harden"]
+      ROOT --> MG
+      MG --> SUB
+      SUB --> RG
+      RG --> RES
+    end
+  end
+`;
+
+const rbacTree = `
+flowchart TB
+  Q["You need to grant somebody a permission"] --> A{"What is being administered?"}
+  A -->|"An Azure resource"| AZ["Azure RBAC role — a VM, storage account, key vault or workspace<br/>Scoped to a management group, subscription, resource group or resource<br/>Assigned on the Access control (IAM) blade"]
+  A -->|"The tenant itself"| EN["Microsoft Entra role — users, apps, Conditional Access, Defender XDR<br/>Scoped tenant-wide or to an administrative unit<br/>Assigned under Roles and administrators"]
+  AZ --> PIM["Either way, do not make it permanent — Privileged Identity Management<br/>makes both kinds eligible, time-bound, approval-gated and audited"]
+  EN --> PIM
+`;
+
+// LR, counter-intuitively: Mermaid lays disconnected subgraphs out across the
+// flow direction, so LR stacks these three vertically. TB spreads them side by
+// side and the diagram becomes a 1600px-wide strip.
+const portals = `
+flowchart LR
+  subgraph AZP["portal.azure.com — the Azure control plane"]
+    A1["Azure Policy · RBAC · resource locks · Key Vault · storage · Azure SQL · networking"]
+    A2["Microsoft Defender for Cloud — plans, connectors, recommendations and secure score"]
+  end
+
+  subgraph DEF["security.microsoft.com — the Microsoft Defender portal"]
+    D1["Defender XDR incidents and advanced hunting · Microsoft Sentinel · Exposure Management"]
+    D2["Security for AI — agent inventory and real-time protection policies"]
+  end
+
+  subgraph OTH["Three you still have to leave the Defender portal for"]
+    O1["entra.microsoft.com — Conditional Access, PIM, authentication methods, Agent ID"]
+    O2["purview.microsoft.com — DSPM, DLP, sensitivity labels and Audit"]
+    O3["securitycopilot.microsoft.com — workspaces, capacity, plugins and agents"]
+  end
+`;
+---
+
+<NoteLayout
+  slug="security-foundations"
+  description="The foundations SC-500 assumes: Zero Trust principles, the Microsoft security product map, Azure RBAC versus Microsoft Entra roles, the management group hierarchy, the Microsoft cloud security benchmark and the renames that trip candidates up."
+  intro="Before any individual control makes sense, you need the map. This page builds the mental model the rest of the syllabus hangs off — who owns what, where it is configured, which permission system governs it, and which names have changed since the tutorials you will inevitably find."
+  themeColor="#0f6cbd"
+>
+  <p class="lead">
+    SC-500 is written for a <strong>security engineer</strong>, not an architect and not an analyst. The verbs in the
+    skills measured are telling: <em>implement</em>, <em>configure</em>, <em>enable</em>, <em>deploy</em>,{' '}
+    <em>manage</em>. You are not asked to justify a design; you are asked to know which blade, which role, which effect
+    and which order. Almost every wrong answer on this exam is a control that would work but sits at the wrong scope, in
+    the wrong portal, or one layer too late in the request path.
+  </p>
+
+  <Callout type="note" title="Which revision these notes target">
+    <p>
+      Everything here is written against the <strong>skills measured as of {SITE.skillsMeasured}</strong>, taken from
+      the official <a href={SITE.studyGuide} target="_blank" rel="noopener">SC-500 study guide</a>. Microsoft revises
+      these lists without much fanfare — open that page and compare the bullet lists before you book. If the study guide
+      has moved on, so has the exam.
+    </p>
+  </Callout>
+
+  <h2 id="zero-trust-in-three-sentences">Zero Trust in three sentences</h2>
+  <p>
+    Zero Trust is not an exam objective by name, but it is the organising idea behind almost every recommended answer.
+    Microsoft states it as three principles:
+  </p>
+  <dl class="terms">
+    <dt>Verify explicitly</dt>
+    <dd>
+      Authenticate and authorise on every available signal — identity, device health, location, workload, data
+      sensitivity, risk — on every request. In SC-500 terms: Conditional Access, ID Protection, device compliance,
+      authentication strength.
+    </dd>
+    <dt>Use least-privileged access</dt>
+    <dd>
+      Just-in-time and just-enough access, risk-based adaptive policy, data protection. In SC-500 terms: PIM,
+      time-bound role assignments, JIT VM access, custom roles scoped tightly, access reviews.
+    </dd>
+    <dt>Assume breach</dt>
+    <dd>
+      Segment, encrypt end to end, verify continuously, and drive detection and response from telemetry. In SC-500
+      terms: NSGs and security admin rules, private endpoints, Defender workload plans, Sentinel.
+    </dd>
+  </dl>
+  <p>
+    When a question offers four technically valid controls, the one that <em>reduces standing privilege</em> or{' '}
+    <em>removes a public path</em> is almost always the keyed answer.
+  </p>
+
+  <h2 id="the-product-map">The product map: who owns what</h2>
+  <p>
+    Microsoft's security portfolio overlaps heavily, and the exam exploits that. Learn the one-sentence boundary for
+    each product and a surprising number of questions answer themselves.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Product</th><th>Owns</th><th>Does not own</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Microsoft Entra ID</td>
+          <td>Identities, authentication, Conditional Access, PIM, app registrations and consent, managed identities, agent identities</td>
+          <td>Anything about an Azure resource's configuration</td>
+        </tr>
+        <tr>
+          <td>Microsoft Defender for Cloud</td>
+          <td>Cloud security posture (CSPM) and workload protection (CWP) for Azure, AWS and GCP — secure score, recommendations, regulatory compliance, the per-resource Defender plans</td>
+          <td>Endpoint EDR by itself, SIEM correlation, identity policy</td>
+        </tr>
+        <tr>
+          <td>Microsoft Defender XDR</td>
+          <td>Cross-signal incidents, advanced hunting, the unified Defender portal, Security for AI and agent inventory</td>
+          <td>Azure resource configuration and compliance standards</td>
+        </tr>
+        <tr>
+          <td>Microsoft Sentinel</td>
+          <td>SIEM and SOAR — log collection, custom tables, retention tiers, the data lake, analytics rules, automation rules and playbooks</td>
+          <td>Posture recommendations, secure score, resource hardening</td>
+        </tr>
+        <tr>
+          <td>Microsoft Purview</td>
+          <td>Data security and compliance — classification, sensitivity labels, DLP, DSPM (including for AI), Audit, insider risk</td>
+          <td>Infrastructure hardening and threat detection on compute</td>
+        </tr>
+        <tr>
+          <td>Microsoft Security Copilot</td>
+          <td>The natural-language layer over all of the above — plugins, promptbooks and agents, priced in Security Compute Units</td>
+          <td>Any data you do not already have permission to see</td>
+        </tr>
+        <tr>
+          <td>Azure Policy</td>
+          <td>Preventive and corrective governance of Azure resource properties at scale</td>
+          <td>Who may act (that is RBAC) and detection of attacks</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="The boundary that is tested most">
+    <p>
+      <strong>Azure Policy decides what a resource may look like. Azure RBAC decides who may touch it. Resource locks
+      decide whether it can be deleted at all.</strong> Three different systems, three different blades, and questions
+      routinely offer one of the other two as a plausible distractor. "Prevent anyone from creating a storage account
+      that allows public blob access" is Azure Policy with a <code>Deny</code> effect — not a role, not a lock.
+    </p>
+  </Callout>
+
+  <h2 id="where-things-are-configured">Where things are configured</h2>
+  <p>
+    Hotspot and drag-and-drop items love portal navigation. The consolidation into the Defender portal is real but
+    incomplete, and knowing what has <em>not</em> moved is worth marks.
+  </p>
+  <Mermaid
+    code={portals}
+    caption="The four portals SC-500 expects you to move between. Defender for Cloud now appears in both the Azure portal and the Defender portal; identity, data governance and Security Copilot each keep their own."
+  />
+
+  <Callout type="rename" title="Names that changed under you">
+    <p>
+      SC-500 sits on top of several renames, and older tutorials, blog posts and practice tests still use the old terms.
+      Learn the right-hand column — the exam uses it.
+    </p>
+  </Callout>
+
+  <div class="table-wrap">
+    <table class="tbl t-crimson">
+      <thead>
+        <tr><th>You will still see</th><th>Current name</th><th>Worth knowing</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Azure Active Directory / Azure AD</td>
+          <td><strong>Microsoft Entra ID</strong></td>
+          <td>Service, SKUs and APIs are unchanged; only the brand moved. <code>*.onmicrosoft.com</code> and Graph endpoints stayed.</td>
+        </tr>
+        <tr>
+          <td>Azure Security Center, Azure Defender</td>
+          <td><strong>Microsoft Defender for Cloud</strong></td>
+          <td>"Azure Defender plans" are now "Defender plans" or "workload protection plans".</td>
+        </tr>
+        <tr>
+          <td>Azure Sentinel</td>
+          <td><strong>Microsoft Sentinel</strong></td>
+          <td>Increasingly operated from the Defender portal rather than the Azure portal.</td>
+        </tr>
+        <tr>
+          <td>Microsoft 365 Defender</td>
+          <td><strong>Microsoft Defender XDR</strong></td>
+          <td>The portal is <code>security.microsoft.com</code>.</td>
+        </tr>
+        <tr>
+          <td>Azure Policy guest configuration</td>
+          <td><strong>Azure Machine Configuration</strong></td>
+          <td>Same job — auditing and enforcing in-guest settings on Azure and Arc machines.</td>
+        </tr>
+        <tr>
+          <td>Log Analytics archive / basic logs</td>
+          <td><strong>Table plans and retention tiers</strong></td>
+          <td>Analytics, Basic and Auxiliary plans; in Sentinel, the analytics tier and the data lake tier.</td>
+        </tr>
+        <tr>
+          <td>Azure AI Foundry / Azure AI Studio</td>
+          <td><strong>Microsoft Foundry</strong></td>
+          <td>Its safety features are now "guardrails and controls" rather than "content filters".</td>
+        </tr>
+        <tr>
+          <td>Azure AI Content Safety filters</td>
+          <td><strong>Guardrails and controls</strong> in Foundry</td>
+          <td>The standalone Content Safety API still exists; the in-Foundry experience is the guardrail.</td>
+        </tr>
+        <tr>
+          <td>Microsoft Defender for Cloud Apps (for agents)</td>
+          <td><strong>Security for AI</strong> in the Defender portal</td>
+          <td>Agent discovery, posture and real-time protection now sit under Security for AI.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="the-scope-hierarchy">The scope hierarchy, and what inherits down it</h2>
+  <Mermaid
+    code={hierarchy}
+    caption="Azure RBAC assignments, Azure Policy assignments and resource locks are all inherited by everything beneath the scope you set them at. The tenant wraps the whole hierarchy but is governed by a separate role system."
+  />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Assign at…</th><th>Azure RBAC</th><th>Azure Policy</th><th>Resource lock</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Management group</td><td>✅ inherited by all subscriptions beneath</td><td>✅ the usual place for organisation-wide guardrails</td><td>❌ not supported</td></tr>
+        <tr><td>Subscription</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Resource group</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Resource</td><td>✅</td><td>❌ assign at RG or above and scope with conditions/exclusions</td><td>✅</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="warn" title="Three inheritance traps">
+    <p>
+      <strong>One:</strong> RBAC is additive — there is no "deny" you can assign yourself. The only deny in Azure RBAC
+      comes from platform-managed <em>deny assignments</em> (used by Azure Blueprints, deployment stacks and managed
+      applications), which you cannot create by hand. To stop an action, use Azure Policy with <code>Deny</code>.{' '}
+      <strong>Two:</strong> a <code>ReadOnly</code> lock is far blunter than it sounds — it blocks any operation that is
+      technically a write, which is why it breaks things like listing storage account keys (a <code>POST</code>).
+      <strong>Three:</strong> locks are a <em>control plane</em> control. A <code>CanNotDelete</code> lock on a storage
+      account does not stop anyone with data-plane access from deleting every blob inside it.
+    </p>
+  </Callout>
+
+  <h2 id="two-role-systems">Two role systems, one exam</h2>
+  <p>
+    The single most common source of confusion on this exam is that Azure has two entirely separate authorisation
+    systems that happen to share a directory. Get this decision right and a long tail of questions becomes trivial.
+  </p>
+  <Mermaid
+    code={rbacTree}
+    caption="Azure RBAC governs resources; Microsoft Entra roles govern the tenant. Both can be made eligible rather than permanent through PIM."
+  />
+
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead>
+        <tr><th></th><th>Azure RBAC</th><th>Microsoft Entra roles</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Governs</td><td>Azure resources (control plane, and data plane where the resource supports it)</td><td>Microsoft Entra ID and Microsoft 365 services</td></tr>
+        <tr><td>Scopes</td><td>Management group → subscription → resource group → resource</td><td>Tenant, or an administrative unit; some roles support app-scoped assignment</td></tr>
+        <tr><td>Definition shape</td><td><code>Actions</code>, <code>NotActions</code>, <code>DataActions</code>, <code>NotDataActions</code>, <code>AssignableScopes</code></td><td>A fixed set of <code>rolePermissions</code>; custom roles exist for a subset of resources such as app registrations</td></tr>
+        <tr><td>Custom roles</td><td>Yes — up to 5,000 per tenant, cloned from built-ins or authored in JSON</td><td>Yes, but far more limited in what they can cover</td></tr>
+        <tr><td>Where assigned</td><td>Access control (IAM) on any scope</td><td>Microsoft Entra admin center → Roles and administrators</td></tr>
+        <tr><td>Examples</td><td>Owner, Contributor, Reader, User Access Administrator, Key Vault Secrets User, Storage Blob Data Contributor, Microsoft Sentinel Responder</td><td>Global Administrator, Security Administrator, Security Reader, Conditional Access Administrator, Application Administrator, Privileged Role Administrator</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="exam" title="The one bridge between them">
+    <p>
+      A <strong>Global Administrator</strong> can turn on <em>Access management for Azure resources</em> in Microsoft
+      Entra ID (the "elevate access" toggle). Doing so grants them <strong>User Access Administrator</strong> at the{' '}
+      <strong>root scope</strong> <code>/</code> — above every management group — so they can repair a subscription
+      nobody has access to any more. It is a break-glass action, it should be turned off again immediately, and it is a
+      favourite exam scenario for "an administrator cannot see a subscription; what do you do?".
+    </p>
+  </Callout>
+
+  <h2 id="shared-responsibility">Shared responsibility, and why it decides answers</h2>
+  <p>
+    Responsibility shifts as you move up the service models, and SC-500 uses that to rule answers in and out. If the
+    question is about an <strong>Azure SQL Database</strong>, patching the operating system is not your job and is
+    therefore not the answer; if it is about a <strong>VM</strong>, it is.
+  </p>
+
+  <div class="table-wrap">
+    <table class="tbl t-slate">
+      <thead>
+        <tr><th>Responsibility</th><th>On-premises</th><th>IaaS (VM)</th><th>PaaS (App Service, Azure SQL)</th><th>SaaS (Microsoft 365)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Information and data</td><td>You</td><td>You</td><td>You</td><td>You</td></tr>
+        <tr><td>Devices and accounts</td><td>You</td><td>You</td><td>You</td><td>You</td></tr>
+        <tr><td>Identity and directory infrastructure</td><td>You</td><td>Shared</td><td>Shared</td><td>Shared</td></tr>
+        <tr><td>Applications</td><td>You</td><td>Shared</td><td>Shared</td><td>Microsoft</td></tr>
+        <tr><td>Network controls</td><td>You</td><td>You</td><td>Shared</td><td>Microsoft</td></tr>
+        <tr><td>Operating system</td><td>You</td><td>You</td><td>Microsoft</td><td>Microsoft</td></tr>
+        <tr><td>Physical hosts, network, datacentre</td><td>You</td><td>Microsoft</td><td>Microsoft</td><td>Microsoft</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    <strong>Information and data, and devices and accounts, are always yours.</strong> That is why "encrypt the data",
+    "restrict who can sign in" and "classify the content" are almost never wrong answers regardless of service model.
+  </p>
+
+  <h2 id="the-microsoft-cloud-security-benchmark">The Microsoft cloud security benchmark</h2>
+  <p>
+    The <strong>Microsoft cloud security benchmark (MCSB)</strong> is Microsoft's own set of security control
+    recommendations, mapped to CIS, NIST SP 800-53 and PCI DSS. It matters for the exam because it is not a document you
+    read and file away — it is wired into the products:
+  </p>
+  <ul>
+    <li>It is the <strong>default security standard</strong> applied to every subscription in Defender for Cloud, and it cannot be removed.</li>
+    <li>Defender for Cloud's <strong>secure score</strong> is calculated from the recommendations that MCSB generates.</li>
+    <li>Defender for Servers Plan 2's <strong>OS configuration assessment</strong> measures machines against MCSB compute baselines.</li>
+    <li>Adding PCI DSS, ISO 27001, NIST or a sovereign standard to the <strong>regulatory compliance dashboard</strong> layers extra standards <em>on top of</em> MCSB; it never replaces it.</li>
+  </ul>
+
+  <Callout type="tip" title="Read secure score as a sentence">
+    <p>
+      "Enable Defender CSPM" does not raise your secure score by itself — <em>remediating the recommendations it
+      surfaces</em> does. When a question describes a score that will not move, look for a subscription where
+      recommendations are being generated but nothing is assigned to fix them, or for resources excluded by an exemption.
+    </p>
+  </Callout>
+
+  <h2 id="control-plane-versus-data-plane">Control plane versus data plane</h2>
+  <p>
+    This distinction runs through the whole exam and explains a startling number of "why did that not work?" scenarios.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-royal">
+      <thead>
+        <tr><th></th><th>Control plane</th><th>Data plane</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Endpoint</td><td><code>management.azure.com</code> (Azure Resource Manager)</td><td>Per-service, e.g. <code>&lt;account&gt;.blob.core.windows.net</code>, <code>&lt;vault&gt;.vault.azure.net</code></td></tr>
+        <tr><td>Governs</td><td>Creating, configuring and deleting the resource</td><td>Reading and writing the contents of the resource</td></tr>
+        <tr><td>Authorised by</td><td>Azure RBAC, always</td><td>Azure RBAC, service-specific policies, keys or SAS — depending on the service</td></tr>
+        <tr><td>Logged to</td><td>Azure Activity log</td><td>Resource logs (diagnostic settings), per category</td></tr>
+        <tr><td>Blocked by</td><td>Resource locks, Azure Policy <code>Deny</code>, ARM-level conditions</td><td>Service firewalls, private endpoints, network rules</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <Callout type="warn" title="The classic trap">
+    <p>
+      An <strong>Owner</strong> on a storage account can read no blobs at all if access is via Microsoft Entra
+      authorisation, because Owner carries no <code>DataActions</code>. They must also hold a data role such as{' '}
+      <strong>Storage Blob Data Reader</strong>. The same is true of Key Vault under the RBAC permission model: Owner
+      lets you configure the vault; <strong>Key Vault Secrets User</strong> lets you read a secret. Expect at least one
+      question that turns on exactly this.
+    </p>
+  </Callout>
+
+  <h2 id="what-to-carry-forward">What to carry forward</h2>
+  <div class="card">
+    <ol class="steps">
+      <li><strong>Pick the plane first.</strong> Identity, network, resource configuration, data, or detection — the layer narrows the product before you read the options.</li>
+      <li><strong>Then pick the system.</strong> Who may act is RBAC; what it may look like is Policy; whether it can be deleted is a lock; whether the request even arrives is a firewall or private endpoint.</li>
+      <li><strong>Then pick the scope.</strong> Nearly every "at scale" or "for all current and future subscriptions" phrase means a management group.</li>
+      <li><strong>Then check standing privilege.</strong> If two answers both work, the one that is time-bound, eligible or just-in-time is the keyed one.</li>
+    </ol>
+  </div>
+  <p>
+    With that in hand, go to <a href={href('skill-1-identity-access-governance')}>Skill 1</a>, which takes the identity
+    and governance layer apart control by control.
+  </p>
+</NoteLayout>

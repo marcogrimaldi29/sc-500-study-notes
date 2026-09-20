@@ -1,0 +1,160 @@
+---
+/**
+ * Right-hand section outline, in the spirit of the Shiki / VitePress aside: a
+ * quiet list of the page's headings with a small accent marker that slides
+ * between entries as you scroll.
+ *
+ * It is one element in one place in the DOM. On wide screens the grid puts it
+ * in the right column; below the aside breakpoint the same element becomes a
+ * collapsible card between the page title and the body, so a narrow viewport
+ * gives its width back to the prose.
+ *
+ * The list is built from the rendered headings rather than declared a second
+ * time, so it can never drift out of sync with the page.
+ */
+---
+
+<nav class="on-this-page" aria-label="On this page" hidden>
+  <details class="otp" open>
+    <summary class="otp-summary">
+      <svg class="otp-chevron" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M3.15 5.65a.5.5 0 0 1 .7 0L8 9.79l4.15-4.14a.5.5 0 1 1 .7.7l-4.5 4.5a.5.5 0 0 1-.7 0l-4.5-4.5a.5.5 0 0 1 0-.7Z" />
+      </svg>
+      <span>On this page</span>
+    </summary>
+
+    <div class="otp-body">
+      <span class="otp-marker" aria-hidden="true"></span>
+      <ul class="otp-list"></ul>
+    </div>
+  </details>
+</nav>
+
+<script is:inline>
+  // Collapse the card before first paint on narrow viewports, so small screens
+  // never flash a fully expanded outline.
+  (function () {
+    var otp = document.querySelector('.otp');
+    if (otp && !window.matchMedia('(min-width: 1281px)').matches) otp.removeAttribute('open');
+  })();
+</script>
+
+<script>
+  const nav = document.querySelector<HTMLElement>('.on-this-page');
+  const list = nav?.querySelector<HTMLUListElement>('.otp-list');
+  const marker = nav?.querySelector<HTMLElement>('.otp-marker');
+  const details = nav?.querySelector<HTMLDetailsElement>('.otp');
+  const content = document.querySelector('.content');
+
+  function slugify(text: string) {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+  }
+
+  const headings = content ? Array.from(content.querySelectorAll<HTMLElement>('h2, h3')) : [];
+
+  if (nav && list && headings.length) {
+    const links = new Map<string, HTMLAnchorElement>();
+
+    headings.forEach((h) => {
+      if (!h.id) h.id = slugify(h.textContent || '');
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = `#${h.id}`;
+      // Drop the leading section number; the prose already shows it.
+      a.textContent = (h.textContent || '').replace(/^\s*\d+(\.\d+)*\s*/, '').trim();
+      a.className = h.tagName === 'H3' ? 'otp-h3' : 'otp-h2';
+      li.appendChild(a);
+      list.appendChild(li);
+      links.set(h.id, a);
+    });
+
+    nav.hidden = false;
+
+    /* ---------- active heading + sliding marker ---------- */
+    const wide = window.matchMedia('(min-width: 1281px)');
+    let active: HTMLAnchorElement | null = null;
+
+    // Scroll the outline's own container only. scrollIntoView would be allowed
+    // to move the window as well, which fights the reader's scrolling.
+    function revealInOutline(link: HTMLElement) {
+      const box = wide.matches ? nav! : nav!.querySelector<HTMLElement>('.otp-body');
+      if (!box || box.scrollHeight <= box.clientHeight) return;
+      const l = link.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      if (l.top < b.top) box.scrollTop -= b.top - l.top;
+      else if (l.bottom > b.bottom) box.scrollTop += l.bottom - b.bottom;
+    }
+
+    function setActive(link: HTMLAnchorElement | null) {
+      if (link === active) return;
+      active?.classList.remove('active');
+      active = link;
+      if (!link || !marker) {
+        marker?.style.setProperty('opacity', '0');
+        return;
+      }
+      link.classList.add('active');
+      // offsetTop is measured against .otp-body, the positioned ancestor, which
+      // is also what the marker is absolutely positioned against.
+      marker.style.top = `${link.offsetTop + (link.offsetHeight - marker.offsetHeight) / 2}px`;
+      marker.style.opacity = '1';
+      revealInOutline(link);
+    }
+
+    const headerOffset = () => {
+      const raw = getComputedStyle(document.documentElement).getPropertyValue('--header-h');
+      return (parseInt(raw, 10) || 60) + 28;
+    };
+
+    function update() {
+      const probe = window.scrollY + headerOffset();
+      let current: HTMLElement | null = null;
+
+      for (const h of headings) {
+        const top = h.getBoundingClientRect().top + window.scrollY;
+        if (top <= probe) current = h;
+        else break;
+      }
+
+      // Past the end of the document, the last heading is the one you are in.
+      const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 2;
+      if (atBottom) current = headings[headings.length - 1];
+
+      setActive(current ? (links.get(current.id) ?? null) : null);
+    }
+
+    let ticking = false;
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        update();
+        ticking = false;
+      });
+    }
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll, { passive: true });
+    // Re-measure once the outline expands or collapses: offsetTop changes with it.
+    details?.addEventListener('toggle', () => {
+      active = null;
+      update();
+    });
+    update();
+
+    /* ---------- collapse behaviour across the aside breakpoint ---------- */
+    const syncOpen = () => {
+      if (!details) return;
+      details.open = wide.matches;
+    };
+    wide.addEventListener('change', syncOpen);
+
+    // On narrow screens, choosing a heading should close the card again.
+    list.addEventListener('click', () => {
+      if (details && !wide.matches) details.open = false;
+    });
+  }
+</script>

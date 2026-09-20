@@ -1,0 +1,76 @@
+---
+import ThemeToggle from './ThemeToggle.astro';
+import { href } from '../lib/urls';
+
+/**
+ * The three controls that float over the page.
+ *
+ * Home and Back to top sit bottom-right and only appear once the reader has
+ * scrolled past the fold. The theme switcher sits bottom-left and is
+ * **always** visible: unlike the other two it is not a shortcut for something
+ * else on the page, so scroll-gating it would leave no way to change theme
+ * from the top of a page.
+ *
+ * It lives here rather than in the header because on a phone the header has
+ * to fit the drawer control, the full wordmark, search and the GitHub link —
+ * and the wordmark is the thing that must not be truncated.
+ */
+
+interface Props {
+  /** The home page hides its own Home button, where it would be a no-op. */
+  isHome?: boolean;
+}
+
+const { isHome = false } = Astro.props;
+---
+
+<ThemeToggle />
+
+{
+  !isHome && (
+    <a class="icon-btn float-btn float-home" href={href('')} aria-label="Back to the home page" title="Home">
+      <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8.36 1.19a.5.5 0 0 0-.72 0l-6.5 6.5a.5.5 0 0 0 .36.85H3v5.96c0 .28.22.5.5.5h3a.5.5 0 0 0 .5-.5V10.5h2v4a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5V8.54h1.5a.5.5 0 0 0 .36-.85l-6.5-6.5Z" />
+      </svg>
+    </a>
+  )
+}
+
+<button type="button" class="icon-btn float-btn float-top" id="back-to-top" aria-label="Back to top" title="Back to top">
+  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+    <path d="M8 2.5c.14 0 .27.06.36.15l5 5a.5.5 0 0 1-.72.7L8.5 4.2V13a.5.5 0 0 1-1 0V4.2L3.36 8.35a.5.5 0 1 1-.72-.7l5-5A.5.5 0 0 1 8 2.5Z" />
+  </svg>
+</button>
+
+<script>
+  const buttons = Array.from(document.querySelectorAll<HTMLElement>('.float-btn'));
+  const top = document.getElementById('back-to-top');
+
+  top?.addEventListener('click', () => {
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: 0, behavior: reduced ? 'auto' : 'smooth' });
+    // Move focus for keyboard users, but with preventScroll: focusing an element
+    // triggers a scroll-into-view that would cancel the smooth scroll above and
+    // leave the page stranded part-way up.
+    document.querySelector<HTMLElement>('.site-header .brand')?.focus({ preventScroll: true });
+  });
+
+  // Both buttons appear together once the reader has scrolled past the fold.
+  let ticking = false;
+  function update() {
+    const show = window.scrollY > 520;
+    buttons.forEach((b) => b.classList.toggle('show', show));
+    ticking = false;
+  }
+  window.addEventListener(
+    'scroll',
+    () => {
+      if (!ticking) {
+        ticking = true;
+        requestAnimationFrame(update);
+      }
+    },
+    { passive: true },
+  );
+  update();
+</script>

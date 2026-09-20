@@ -1,0 +1,86 @@
+---
+import { PAGES, SITE } from '../data/site';
+import { asset, href } from '../lib/urls';
+
+const year = new Date().getFullYear();
+const notePages = PAGES.filter((p) => p.slug !== '');
+---
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <div class="footer-col footer-col-author">
+      <!-- No column heading here: the Maintainer pill inside the card already
+           labels this block, and repeating the word read as redundant. -->
+      <div class="author-card">
+        <img src={asset('images/marcogrimaldi29.jpg')} alt={SITE.author.name} width="62" height="62" loading="lazy" />
+        <div>
+          <span class="maintainer-badge">Maintainer</span>
+          <div class="ac-name">{SITE.author.name}</div>
+          <div class="ac-role">{SITE.author.role}</div>
+          <div class="author-links">
+            <a href={SITE.author.github} target="_blank" rel="noopener">
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+              </svg>
+              GitHub
+            </a>
+            <a href={SITE.author.linkedin} target="_blank" rel="noopener">
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M3.4 14H.7V5.3h2.7V14ZM2 4.1a1.6 1.6 0 1 1 0-3.2 1.6 1.6 0 0 1 0 3.2ZM15.3 14h-2.7V9.8c0-1-.02-2.3-1.4-2.3-1.4 0-1.6 1.1-1.6 2.2V14H6.9V5.3h2.6v1.2h.04c.36-.68 1.24-1.4 2.56-1.4 2.74 0 3.24 1.8 3.24 4.14V14Z" />
+              </svg>
+              LinkedIn
+            </a>
+            <a href={SITE.author.site} target="_blank" rel="noopener">
+              <img src={asset('images/site-mark-no-bg.png')} alt="" width="16" height="16" loading="lazy" />
+              Website
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div class="star-cta">
+        ⭐ Found these notes useful? <strong>Star the repo on GitHub</strong> — it helps other SC-500 candidates find them.
+      </div>
+      <div class="contrib-note">
+        🤝 <strong>Open to collaboration.</strong> Microsoft security tooling changes fast, so corrections, additions and
+        pull requests are genuinely welcome — open an issue or a PR on <a
+          href={SITE.repo}
+          target="_blank"
+          rel="noopener"
+          style="display:inline">GitHub</a
+        >.
+      </div>
+    </div>
+
+    <div class="footer-col">
+      <h5>Study pages</h5>
+      {notePages.map((p) => <a href={href(p.slug)}>{p.label}</a>)}
+    </div>
+
+    <div class="footer-col">
+      <h5>Official resources</h5>
+      <a href={SITE.studyGuide} target="_blank" rel="noopener">SC-500 study guide</a>
+      <a href={SITE.certPage} target="_blank" rel="noopener">Certification page</a>
+      <a href={SITE.course} target="_blank" rel="noopener">Course SC-500T00-A</a>
+      <a href="https://learn.microsoft.com/en-us/azure/defender-for-cloud/" target="_blank" rel="noopener"
+        >Defender for Cloud docs</a
+      >
+      <a href="https://learn.microsoft.com/en-us/azure/sentinel/" target="_blank" rel="noopener">Microsoft Sentinel docs</a
+      >
+      <a href="https://learn.microsoft.com/en-us/entra/identity/" target="_blank" rel="noopener">Microsoft Entra ID docs</a
+      >
+      <a href="https://learn.microsoft.com/en-us/azure/key-vault/" target="_blank" rel="noopener">Azure Key Vault docs</a>
+      <a href="https://learn.microsoft.com/en-us/security/benchmark/azure/" target="_blank" rel="noopener"
+        >Microsoft cloud security benchmark</a
+      >
+    </div>
+  </div>
+
+  <div class="footer-bottom">
+    <span>
+      © {year} {SITE.author.name} · Independent study notes, for learning purposes only. Not affiliated with or endorsed by
+      Microsoft — always verify against the official documentation.
+    </span>
+    <span>Built with Astro · Mermaid · Shiki · Cookieless analytics by Umami</span>
+  </div>
+</footer>

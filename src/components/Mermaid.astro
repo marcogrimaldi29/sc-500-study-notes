@@ -1,0 +1,100 @@
+---
+/**
+ * A Mermaid diagram in a captioned figure.
+ *
+ * The graph source is rendered as text inside the figure. Mermaid replaces it
+ * with an SVG on load; if the script fails or JavaScript is off, the reader
+ * still sees the (readable) diagram definition rather than an empty box.
+ *
+ * Mermaid is a dependency of this project rather than a CDN script, so the
+ * version is pinned and the site has no third-party runtime requests.
+ */
+interface Props {
+  /** Mermaid graph definition. */
+  code: string;
+  /** Caption shown under the diagram. */
+  caption?: string;
+}
+
+const { code, caption } = Astro.props;
+---
+
+<figure class="figure">
+  <pre class="mermaid">{code.trim()}</pre>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>('pre.mermaid'));
+
+  // Mermaid is a large dependency, so it is imported dynamically: pages with no
+  // diagram never download it, and pages that do have one render their text
+  // first and upgrade to SVG afterwards.
+  if (nodes.length) {
+    const { default: mermaid } = await import('mermaid');
+
+    // Keep the original source so the diagram can be re-rendered when the
+    // theme flips (Mermaid bakes colours into the generated SVG).
+    nodes.forEach((n) => {
+      if (!n.dataset.src) n.dataset.src = n.textContent ?? '';
+    });
+
+    const read = (name: string, fallback: string) => {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v || fallback;
+    };
+
+    async function render() {
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'base',
+        fontFamily: '"Segoe UI", system-ui, sans-serif',
+        // wrappingWidth defaults to 200px, which silently folds any label
+        // longer than a few words into a tall stack of short lines — the
+        // diagram then renders as a narrow ribbon with empty space either
+        // side. Raising it lets a label stay on one line up to this width,
+        // so the diagrams keep the aspect ratio they were written for.
+        flowchart: { curve: 'basis', useMaxWidth: true, htmlLabels: true, wrappingWidth: 520 },
+        sequence: { useMaxWidth: true },
+        themeVariables: {
+          background: read('--surface', '#fff'),
+          primaryColor: dark ? '#1c2434' : '#eef2fb',
+          primaryTextColor: read('--text', '#171a21'),
+          primaryBorderColor: read('--brand', '#00787f'),
+          secondaryColor: dark ? '#152c2b' : '#e4f5f2',
+          tertiaryColor: dark ? '#16303a' : '#eaf4f8',
+          lineColor: read('--text-muted', '#666e7e'),
+          textColor: read('--text-soft', '#464e5e'),
+          mainBkg: dark ? '#1c2434' : '#eef2fb',
+          nodeBorder: read('--brand', '#00787f'),
+          clusterBkg: dark ? '#151b27' : '#f7f9fd',
+          clusterBorder: read('--border', '#e2e7f0'),
+        },
+      });
+
+      // Reset every node to its source before re-running.
+      nodes.forEach((n) => {
+        n.removeAttribute('data-processed');
+        n.textContent = n.dataset.src ?? '';
+      });
+
+      try {
+        await mermaid.run({ nodes });
+      } catch (err) {
+        console.warn('Mermaid render failed', err);
+      }
+
+      // Rendering changes the page height by tens of thousands of pixels, which
+      // invalidates any anchor scroll the browser already performed.
+      window.dispatchEvent(new CustomEvent('sc500:diagramsrendered'));
+    }
+
+    render();
+    window.addEventListener('sc500:themechange', () => {
+      render();
+    });
+  }
+</script>

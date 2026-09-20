@@ -1,0 +1,111 @@
+---
+import { SITE } from '../data/site';
+import { absolute, asset } from '../lib/urls';
+import Analytics from '../components/Analytics.astro';
+import AnchorFix from '../components/AnchorFix.astro';
+import FloatingButtons from '../components/FloatingButtons.astro';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+  /** Slug of this page, used for canonical URL and nav highlighting. */
+  slug: string;
+  /** Accent colour token for the page, e.g. 'var(--s2)'. */
+  accent?: string;
+  /** Hex used for the browser theme-color meta. */
+  themeColor?: string;
+  ogType?: 'website' | 'article';
+  /** Extra structured data merged into the JSON-LD graph. */
+  schema?: Record<string, unknown>[];
+}
+
+const { title, description, slug, themeColor = '#00787f', ogType = 'article', schema = [] } = Astro.props;
+
+const canonical = absolute(SITE.origin, slug);
+const ogImage = `${SITE.origin}${asset('images/site-mark-no-bg.png')}`;
+const isHome = slug === '';
+
+const graph = [
+  {
+    '@type': 'WebSite',
+    '@id': `${absolute(SITE.origin, '')}#website`,
+    url: absolute(SITE.origin, ''),
+    name: SITE.name,
+    description: `Exam-focused study notes for Microsoft Exam ${SITE.exam}: ${SITE.examTitle}.`,
+    inLanguage: 'en',
+    publisher: { '@id': `${SITE.origin}/#person` },
+  },
+  {
+    '@type': 'Person',
+    '@id': `${SITE.origin}/#person`,
+    name: SITE.author.name,
+    url: SITE.author.site,
+    sameAs: [SITE.author.github, SITE.author.linkedin],
+  },
+  ...schema,
+];
+---
+
+<!doctype html>
+<html lang="en" data-theme="light" style={`--hero-mark:url('${asset('images/site-mark-no-bg.png')}')`}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="author" content={SITE.author.name} />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content={themeColor} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={asset('images/site-mark-no-bg.png')} />
+    <link rel="apple-touch-icon" href={asset('images/site-mark-no-bg.png')} />
+    <link rel="sitemap" href={asset('sitemap.xml')} />
+
+    <meta property="og:type" content={ogType} />
+    <meta property="og:site_name" content={SITE.name} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <script
+      type="application/ld+json"
+      is:inline
+      set:html={JSON.stringify({ '@context': 'https://schema.org', '@graph': graph })}
+    />
+
+    <script is:inline>
+      // Resolve the theme before first paint so there is no flash of the wrong
+      // colour scheme. The toggle keeps this key in sync.
+      (function () {
+        var theme;
+        try {
+          theme = localStorage.getItem('sc500-theme');
+        } catch (e) {}
+        if (theme !== 'dark' && theme !== 'light') {
+          theme =
+            window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
+
+    <Analytics />
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <Header />
+    <slot />
+    <Footer />
+    <FloatingButtons isHome={isHome} />
+    <AnchorFix />
+  </body>
+</html>

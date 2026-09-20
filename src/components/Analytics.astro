@@ -1,0 +1,28 @@
+---
+/**
+ * Cookieless Umami analytics.
+ *
+ * The website ID is never committed. At build time the GitHub Actions workflow
+ * substitutes the UMAMI_WEBSITE_ID repository secret for the placeholder below
+ * (see .github/workflows/deploy-pages.yml). When the secret is not set — local
+ * `npm run dev`, or a fork without analytics — the placeholder survives, the
+ * guard below matches, and no script is loaded at all.
+ *
+ * The guard string is assembled from two halves so the build-time replacement
+ * only ever touches the real placeholder, never the comparison value.
+ */
+---
+
+<script is:inline>
+  (function () {
+    var id = '__UMAMI_WEBSITE_ID__';
+    var placeholder = '__UMAMI' + '_WEBSITE_ID__';
+    if (!id || id === placeholder) return;
+
+    var s = document.createElement('script');
+    s.defer = true;
+    s.src = 'https://cloud.umami.is/script.js';
+    s.setAttribute('data-website-id', id);
+    document.head.appendChild(s);
+  })();
+</script>

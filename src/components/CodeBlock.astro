@@ -1,0 +1,24 @@
+---
+import { Code } from 'astro:components';
+
+/**
+ * Syntax-highlighted code with a language chip.
+ *
+ * Highlighting is done by Shiki at build time, so no highlighter ships to the
+ * browser. Both the light and dark themes are emitted inline and swapped by
+ * the `html[data-theme="dark"] .astro-code` rule in global.css.
+ */
+interface Props {
+  code: string;
+  lang?: string;
+  /** Chip label, when it should differ from the highlighter's language id. */
+  label?: string;
+}
+
+const { code, lang = 'python', label } = Astro.props;
+---
+
+<div class="code-block">
+  <span class="lang">{label ?? lang}</span>
+  <Code code={code.trim()} lang={lang as any} themes={{ light: 'github-light', dark: 'github-dark' }} />
+</div>

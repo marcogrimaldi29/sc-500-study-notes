@@ -1,0 +1,151 @@
+---
+import { GROUP_LABELS, PAGES, SITE, type PageGroup } from '../data/site';
+import { href } from '../lib/urls';
+
+/**
+ * Left rail: navigation between pages, and nothing else.
+ *
+ * Section-level navigation within the current page lives in OnThisPage.astro on
+ * the right, so this list stays short enough to read at a glance and to render
+ * as a drawer on small screens without becoming a wall of nested links.
+ */
+
+interface Props {
+  current: string;
+}
+
+const { current } = Astro.props;
+
+const order: PageGroup[] = ['start', 'skills', 'extras'];
+const groups = order.map((group) => ({
+  group,
+  label: GROUP_LABELS[group],
+  pages: PAGES.filter((p) => p.group === group),
+}));
+---
+
+<button type="button" class="sb-backdrop" id="sb-backdrop" aria-label="Close navigation" tabindex="-1"></button>
+
+<aside class="sidebar" id="sidebar" aria-label="Study notes navigation">
+  <div class="sb-head">
+    <span class="sb-title">{SITE.name}</span>
+
+    <!-- Only shown once the panel becomes a drawer, where the fold control is
+         meaningless and the backdrop alone is not a discoverable way out. -->
+    <button type="button" class="sb-close" id="sb-close" aria-label="Close navigation" title="Close">
+      <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
+      </svg>
+    </button>
+
+    <button
+      type="button"
+      class="sb-fold"
+      id="sb-fold"
+      aria-controls="sidebar"
+      aria-expanded="true"
+      aria-label="Collapse the navigation panel"
+      title="Collapse navigation"
+    >
+      <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M10.35 3.15a.5.5 0 0 1 0 .7L6.21 8l4.14 4.15a.5.5 0 1 1-.7.7l-4.5-4.5a.5.5 0 0 1 0-.7l4.5-4.5a.5.5 0 0 1 .7 0Z" />
+      </svg>
+    </button>
+  </div>
+
+  <nav class="sb-scroll">
+    {
+      groups.map((g) => (
+        <div class="sb-group">
+          <div class="sb-group-label">{g.label}</div>
+          {g.pages.map((p) => (
+            <a
+              class="sb-link"
+              href={href(p.slug)}
+              style={`--accent:${p.accent}`}
+              aria-current={p.slug === current ? 'page' : undefined}
+            >
+              <span class="sb-rail" aria-hidden="true">
+                {p.rail}
+              </span>
+              <span class="sb-text">{p.navLabel}</span>
+            </a>
+          ))}
+        </div>
+      ))
+    }
+  </nav>
+</aside>
+
+<script>
+  const STORAGE_KEY = 'sc500-sidebar';
+  const layout = document.querySelector<HTMLElement>('.layout');
+  const sidebar = document.getElementById('sidebar');
+  const fold = document.getElementById('sb-fold');
+  const openBtn = document.getElementById('sidebar-open');
+  const backdrop = document.getElementById('sb-backdrop');
+
+  /* ---------- fold / unfold (desktop) ---------- */
+  function setCollapsed(collapsed: boolean, persist = true) {
+    if (!layout || !fold) return;
+    layout.setAttribute('data-sidebar', collapsed ? 'collapsed' : 'expanded');
+    fold.setAttribute('aria-expanded', String(!collapsed));
+    fold.setAttribute('aria-label', collapsed ? 'Expand the navigation panel' : 'Collapse the navigation panel');
+    fold.title = collapsed ? 'Expand navigation' : 'Collapse navigation';
+    if (persist) {
+      try {
+        localStorage.setItem(STORAGE_KEY, collapsed ? 'collapsed' : 'expanded');
+      } catch {
+        /* ignore blocked storage */
+      }
+    }
+  }
+
+  // The inline script below restores the state before paint; sync the button
+  // labels to whatever it decided.
+  if (layout?.getAttribute('data-sidebar') === 'collapsed') setCollapsed(true, false);
+
+  fold?.addEventListener('click', () => {
+    setCollapsed(layout?.getAttribute('data-sidebar') !== 'collapsed');
+  });
+
+  /* ---------- drawer (small screens) ---------- */
+  const closeBtn = document.getElementById('sb-close');
+
+  function setDrawer(open: boolean) {
+    if (!layout) return;
+    layout.setAttribute('data-drawer', open ? 'open' : 'closed');
+    openBtn?.setAttribute('aria-expanded', String(open));
+    if (backdrop) backdrop.tabIndex = open ? 0 : -1;
+    // Stop the page behind the drawer from scrolling under the reader's finger.
+    document.documentElement.classList.toggle('drawer-open', open);
+    if (open) sidebar?.querySelector<HTMLElement>('.sb-link')?.focus();
+    else openBtn?.focus();
+  }
+
+  openBtn?.addEventListener('click', () => setDrawer(layout?.getAttribute('data-drawer') !== 'open'));
+  closeBtn?.addEventListener('click', () => setDrawer(false));
+  backdrop?.addEventListener('click', () => setDrawer(false));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && layout?.getAttribute('data-drawer') === 'open') setDrawer(false);
+  });
+  // Following a link inside the drawer should close it.
+  sidebar?.querySelectorAll('a').forEach((a) =>
+    a.addEventListener('click', () => {
+      if (window.matchMedia('(max-width: 980px)').matches) setDrawer(false);
+    }),
+  );
+</script>
+
+<script is:inline>
+  // Restore the fold state before first paint so the grid does not jump.
+  (function () {
+    try {
+      var saved = localStorage.getItem('sc500-sidebar');
+      if (saved === 'collapsed') {
+        var el = document.querySelector('.layout');
+        if (el) el.setAttribute('data-sidebar', 'collapsed');
+      }
+    } catch (e) {}
+  })();
+</script>

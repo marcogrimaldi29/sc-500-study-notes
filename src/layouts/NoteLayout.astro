@@ -1,0 +1,73 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import OnThisPage from '../components/OnThisPage.astro';
+import Pager from '../components/Pager.astro';
+import Sidebar from '../components/Sidebar.astro';
+import { SITE, pageBySlug } from '../data/site';
+import { absolute } from '../lib/urls';
+
+interface Props {
+  slug: string;
+  /** Browser/tab title. Defaults to "<label> — SC-500 Study Notes". */
+  title?: string;
+  description: string;
+  /** Page heading. Defaults to the label in the page registry. */
+  heading?: string;
+  /** Standfirst under the heading. */
+  intro: string;
+  themeColor?: string;
+}
+
+const { slug, title, description, heading, intro, themeColor } = Astro.props;
+
+const page = pageBySlug(slug);
+if (!page) throw new Error(`NoteLayout: "${slug}" is not registered in src/data/site.ts`);
+
+const docTitle = title ?? `${page.label} — ${SITE.exam} Study Notes`;
+
+const schema = [
+  {
+    '@type': 'TechArticle',
+    '@id': `${absolute(SITE.origin, slug)}#article`,
+    headline: heading ?? page.label,
+    description,
+    url: absolute(SITE.origin, slug),
+    inLanguage: 'en',
+    isPartOf: { '@id': `${absolute(SITE.origin, '')}#website` },
+    author: { '@id': `${SITE.origin}/#person` },
+    about: `Microsoft Exam ${SITE.exam}: ${SITE.examTitle}`,
+  },
+];
+---
+
+<BaseLayout
+  title={docTitle}
+  description={description}
+  slug={slug}
+  themeColor={themeColor}
+  ogType="article"
+  schema={schema}
+>
+  <div class="layout" data-sidebar="expanded" data-drawer="closed">
+    <Sidebar current={slug} />
+
+    {/* .page is an inner grid so the outline can sit beside the prose on wide
+        screens and drop between the title and the body on narrow ones, without
+        the element existing twice in the DOM. */}
+    <main class="page" id="main" style={`--accent:${page.accent}`}>
+      <header class="page-head">
+        <div class="kicker">{page.badge}</div>
+        <h1>{heading ?? page.label}</h1>
+        <p>{intro}</p>
+      </header>
+
+      <OnThisPage />
+
+      <div class="content">
+        <slot />
+      </div>
+
+      <Pager current={slug} />
+    </main>
+  </div>
+</BaseLayout>
