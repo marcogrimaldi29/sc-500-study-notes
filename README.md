@@ -38,7 +38,6 @@ Every page carries Mermaid diagrams, decision tables, configuration samples and 
 - **Build-time syntax highlighting** with Shiki — no highlighter ships to the browser
 - Floating **Home** and **Back to top** buttons that appear on scroll, bottom right
 - Accessible by design: skip link, visible focus, semantic landmarks, reduced-motion support, print stylesheet
-- `sitemap.xml`, canonical URLs, Open Graph tags and JSON-LD structured data
 - Cookieless analytics via [Umami](https://umami.is/)
 
 ## 🗂️ Project Structure
@@ -49,30 +48,13 @@ src/
 ├── data/site.ts    Single source of truth: site identity + page registry
 ├── layouts/        BaseLayout (head, header, footer) and NoteLayout (sidebar + content)
 ├── lib/urls.ts     Base-path helpers for links, assets and canonical URLs
-├── pages/          One directory per note page, plus sitemap.xml.ts
+├── pages/          One directory per note page
 └── styles/         global.css — the whole design system
 public/images/      Brand mark and profile image
 ```
 
-Navigation, sidebar, footer, pager, search seed and sitemap all read from the page registry in
+Navigation, sidebar, footer, pager and search all read from the page registry in
 [`src/data/site.ts`](src/data/site.ts), so adding a page is one entry plus one file.
-
-## 🚀 Deployment
-
-Pushing to `main` triggers [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml), which builds the
-site and publishes it to GitHub Pages. The workflow can also be started by hand from the Actions tab.
-
-The workflow substitutes the `UMAMI_WEBSITE_ID` repository secret for a placeholder in the built output, so the
-analytics ID is never committed. Without the secret the placeholder survives, the guard in
-[`Analytics.astro`](src/components/Analytics.astro) matches it, and no analytics script loads at all.
-
-**Repository setup:** Settings → Pages → Source → **GitHub Actions**, and add `UMAMI_WEBSITE_ID` under
-Settings → Secrets and variables → Actions.
-
-The sitemap is generated at build time by [`src/pages/sitemap.xml.ts`](src/pages/sitemap.xml.ts) from the same page
-registry, so it can never drift from the pages that exist. Being build output, there is no `sitemap.xml` file committed
-to this repository — it is served at
-[marcogrimaldi29.com/sc-500-study-notes/sitemap.xml](https://marcogrimaldi29.com/sc-500-study-notes/sitemap.xml).
 
 ## 🧰 Built With
 
@@ -81,25 +63,16 @@ to this repository — it is served at
 
 ## 🤖 A Note on AI
 
-These notes were researched and written **with the help of AI — [Claude](https://claude.com/claude-code) in this
-case** — working from the official Microsoft Learn documentation, the SC-500 study guide and the SC-500T00-A course
-syllabus. Every page was reviewed before publication, but AI-assisted writing can still get details wrong, and
-Microsoft's security portfolio is renamed and re-scoped constantly — the AI security surface especially. Treat these
-notes as a study companion and verify anything decision-critical against the
-[official documentation](https://learn.microsoft.com/en-us/azure/defender-for-cloud/).
+These notes were researched and written **with the help of AI — [Claude](https://claude.com/claude-code)** in this case — working from the official Microsoft Learn documentation, the SC-500 study guide and the SC-500T00-A course syllabus. Every page was reviewed before publication, but AI-assisted writing can still get details wrong, and Microsoft's security portfolio is renamed and re-scoped constantly — the AI security surface especially. Treat these notes as a study companion and verify anything decision-critical against the [official documentation](https://learn.microsoft.com/en-us/azure/defender-for-cloud/).
 
 ## 🤝 Contributing
 
-Microsoft security tooling changes fast and features get renamed often, so corrections are genuinely useful. Open an
-[issue](https://github.com/marcogrimaldi29/sc-500-study-notes/issues) or a pull request.
+Microsoft security tooling changes fast and features get renamed often, so corrections are genuinely useful. Open an [issue](https://github.com/marcogrimaldi29/sc-500-study-notes/issues) or a pull request.
 
 ## ⚠️ Disclaimer
 
-These notes are an independent study aid for **learning purposes only**. They are not affiliated with or endorsed by
-Microsoft. Always verify against the
-[official SC-500 study guide](https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/sc-500)
-and the [Microsoft security documentation](https://learn.microsoft.com/en-us/security/) before relying on any detail
-here.
+These notes are an independent study aid for **learning purposes only**. They are not affiliated with or endorsed by Microsoft. Always verify against the [official SC-500 study guide](https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/sc-500)
+and the [Microsoft security documentation](https://learn.microsoft.com/en-us/security/) before relying on any detail here.
 
 ## 👋 Let's Connect
 
