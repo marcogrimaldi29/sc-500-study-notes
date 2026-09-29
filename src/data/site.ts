@@ -18,6 +18,7 @@ export const SITE = {
   skillsMeasured: 'April 26, 2026',
   origin: 'https://marcogrimaldi29.com',
   repo: 'https://github.com/marcogrimaldi29/sc-500-study-notes',
+  issues: 'https://github.com/marcogrimaldi29/sc-500-study-notes/issues',
   studyGuide: 'https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/sc-500',
   certPage: 'https://learn.microsoft.com/en-us/credentials/certifications/cloud-and-ai-security-engineer-associate/',
   course: 'https://learn.microsoft.com/en-us/training/courses/sc-500t00',
