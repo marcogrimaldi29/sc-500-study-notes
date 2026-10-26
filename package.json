@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "astro": "^7.3.3",
-    "mermaid": "^12.0.0"
+    "mermaid": "^12.2.0"
   },
   "overrides": {
     "lodash-es": "^4.18.1"
