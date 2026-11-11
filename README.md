@@ -66,7 +66,8 @@ These notes were researched and written **with the help of AI — [Claude](https
 ## 🐞 Spotted a Mistake?
 
 Microsoft security tooling changes fast and features get renamed often, so if something here is wrong or out of date, please
-[report an issue](https://github.com/marcogrimaldi29/sc-500-study-notes/issues).
+[report an issue](https://github.com/marcogrimaldi29/sc-500-study-notes/issues). The
+[contributing guide](.github/CONTRIBUTING.md) explains what makes a report quick to fix and what's out of scope.
 
 ## ⚠️ Disclaimer
 
